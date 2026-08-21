@@ -18,7 +18,7 @@ PROJECT_DIR="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
 
 SSH_CONFIG_SOURCE="${PROJECT_DIR}/config/sshd_config.conf"
 SSH_CONFIG_DIR="/etc/ssh/sshd_config.d"
-SSH_CONFIG_TARGET="${SSH_CONFIG_DIR}/99-linux-server-bootstrap.conf"
+SSH_CONFIG_TARGET="${SSH_CONFIG_DIR}/sshd_config.conf"
 BACKUP_DIR="/home/rahmni/backup"
 
 
@@ -112,13 +112,21 @@ backup_config() {
     local timestamp
     timestamp="$(date '+%Y%m%d-%H%M%S')"
 
-    local backup_file
-    backup_file="${BACKUP_DIR}/sshd_config.${timestamp}"
+    BACKUP_FILE="${BACKUP_DIR}/99-linux-server-bootstrap.conf.${timestamp}"
 
-    cp -a /etc/ssh/sshd_config "${backup_file}"
+    if [[ -f "${SSH_CONFIG_TARGET}" ]]; then
 
-    success "SSH configuration backed up:"
-    info "${backup_file}"
+        cp -a "${SSH_CONFIG_TARGET}" "${BACKUP_FILE}"
+
+        success "Existing hardening configuration backed up:"
+        info "${BACKUP_FILE}"
+
+    else
+
+        warn "No previous hardening configuration found."
+        info "A rollback will remove the new configuration if validation fails."
+
+    fi
 }
 
 
@@ -151,10 +159,14 @@ validate_config() {
 
     if sshd -t; then
         success "SSH configuration is valid."
-    else
-        error "SSH configuration validation failed."
-        return 1
+        return 0
     fi
+
+    error "SSH configuration validation failed."
+
+    rollback_config
+
+    return 1
 }
 
 
@@ -185,21 +197,53 @@ reload_ssh() {
     fi
 }
 
+# ------------------------------------------------------------
+# Rollback
+# ------------------------------------------------------------
+
+rollback_config() {
+
+    warn "Rolling back SSH configuration..."
+
+    if [[ -n "${BACKUP_FILE}" && -f "${BACKUP_FILE}" ]]; then
+
+        cp -a "${BACKUP_FILE}" "${SSH_CONFIG_TARGET}"
+
+        success "Previous SSH hardening configuration restored."
+
+    else
+
+        rm -f "${SSH_CONFIG_TARGET}"
+
+        success "New SSH hardening configuration removed."
+
+    fi
+}
 
 # ------------------------------------------------------------
 # Main
 # ------------------------------------------------------------
-
 main() {
 
     info "Starting SSH hardening..."
 
     require_root
     check_prerequisites
+
     backup_config
     install_config
-    validate_config
-    reload_ssh
+
+    if ! validate_config; then
+        error "SSH hardening aborted."
+        rollback_config
+        exit 1
+    fi
+
+    if ! reload_ssh; then
+        error "SSH reload failed."
+        rollback_config
+        exit 1
+    fi
 
     success "SSH hardening completed successfully."
 }
