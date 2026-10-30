@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# Install fail2ban and enable an SSH jail.
-# Debian-family bans through ufw. RPM-family bans through firewalld.
-# RPM installs enable EPEL when the fail2ban package is not in the base repos.
+# Install fail2ban, enable an sshd jail, and roll back if the jail is rejected.
+#
+# The ban action and any extra repository come from the loaded driver; the log
+# backend follows the init system. Adding a distribution does not touch this file.
 
 set -euo pipefail
 
@@ -10,54 +11,28 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/../lib/common.sh"
 
 JAIL_TEMPLATE="${PROJECT_DIR}/config/fail2ban-sshd.conf"
-JAIL_TARGET="/etc/fail2ban/jail.d/00-linux-server-bootstrap.conf"
+JAIL_ACTION_DIR="/etc/fail2ban/action.d"
 
 usage() {
     cat <<EOF
 Usage: bash hardening/fail2ban.sh [--port N] [--yes]
        bash hardening/fail2ban.sh --rollback
+       bash hardening/fail2ban.sh --dry-run
 
 Enables the sshd jail: 3 failures in 10 minutes, 1 hour ban.
+The ban action is chosen from the firewall that is actually installed.
 Backups: ${BACKUP_ROOT}/fail2ban/<timestamp>
 EOF
-}
-
-install_epel_if_needed() {
-    if [[ "${OS_FAMILY}" != "rhel" || "${OS_ID}" == "fedora" || "${OS_ID}" == "amzn" ]]; then
-        return 0
-    fi
-    if rpm -q epel-release >/dev/null 2>&1; then
-        return 0
-    fi
-
-    info "Installing EPEL so fail2ban is available..."
-    if pkg_try_install epel-release; then
-        return 0
-    fi
-
-    local major
-    major="$(rpm -E %rhel 2>/dev/null || true)"
-    if [[ -z "${major}" || "${major}" == "%rhel" ]]; then
-        error "Could not detect the EL major version for EPEL."
-        return 1
-    fi
-    pkg_try_install "https://dl.fedoraproject.org/pub/epel/epel-release-latest-${major}.noarch.rpm"
-}
-
-install_fail2ban_package() {
-    if pkg_try_install fail2ban; then
-        return 0
-    fi
-    install_epel_if_needed || return 1
-    pkg_try_install fail2ban
 }
 
 render_jail() {
     local dest="$1"
     local action="$2"
-    awk -v port="${SSH_PORT}" -v action="${action}" '
+    local backend="$3"
+    awk -v port="${SSH_PORT}" -v action="${action}" -v backend="${backend}" '
         {
             gsub("__SSH_PORT__", port)
+            gsub("__BAN_BACKEND__", backend)
             if ($0 ~ /^banaction = /) {
                 if (action != "") {
                     print "banaction = " action
@@ -69,16 +44,9 @@ render_jail() {
     ' "${JAIL_TEMPLATE}" > "${dest}"
 }
 
-fail2ban_was_active() {
-    systemctl is-active --quiet fail2ban
-}
-
 rollback_component() {
     trap - ERR
-    if [[ "${ROLLBACK_DONE}" -eq 1 ]]; then
-        return 0
-    fi
-    ROLLBACK_DONE=1
+    rollback_preflight || return 0
 
     local dir="${BACKUP_DIR:-}"
     if [[ -z "${dir}" ]]; then
@@ -91,14 +59,30 @@ rollback_component() {
     # shellcheck disable=SC1091
     source "${dir}/manifest.env"
     if [[ "${FAIL2BAN_ACTIVE:-0}" == "1" ]]; then
-        systemctl enable --now fail2ban || error "Could not start fail2ban after restore."
-        fail2ban-client reload || true
-    elif unit_exists fail2ban.service; then
-        systemctl disable --now fail2ban || true
+        svc_enable_now fail2ban || error "Could not start fail2ban after restore."
+        fail2ban-client reload >/dev/null 2>&1 || true
+    elif svc_unit_exists fail2ban.service; then
+        svc_disable_now fail2ban || true
     fi
 
     finish_rollback_pointer fail2ban
     success "fail2ban rollback finished."
+}
+
+select_ban_action() {
+    local action
+    action="$(drv_f2b_action)"
+    if [[ -z "${action}" ]]; then
+        warn "No firewall command is available, so fail2ban keeps its package default ban action."
+        printf '\n'
+        return 0
+    fi
+    if [[ ! -f "${JAIL_ACTION_DIR}/${action}.conf" ]]; then
+        warn "fail2ban action ${action} is missing. The package default ban action will be used."
+        printf '\n'
+        return 0
+    fi
+    printf '%s\n' "${action}"
 }
 
 apply_fail2ban() {
@@ -116,10 +100,16 @@ EOF
         return 1
     fi
 
-    install_fail2ban_package
+    drv_f2b_prepare_repo || return 1
+    drv_pkg_install fail2ban || return 1
+
+    local action backend
+    action="$(select_ban_action)"
+    backend="$(pick_fail2ban_backend)"
+    info "Ban action is ${action:-package default}, log backend is ${backend}."
 
     local was_active=0
-    if fail2ban_was_active; then
+    if svc_is_active fail2ban; then
         was_active=1
     fi
 
@@ -132,31 +122,26 @@ EOF
         save_snapshot fail2ban-status-before.txt fail2ban-client status
     fi
 
-    local action="" tmp
-    if [[ "${OS_FAMILY}" == "debian" ]] && command -v ufw >/dev/null 2>&1; then
-        action="ufw"
-    elif [[ "${OS_FAMILY}" != "debian" ]] && command -v firewall-cmd >/dev/null 2>&1; then
-        action="firewallcmd-rich-rules"
-    fi
-
-    if [[ -z "${action}" ]]; then
-        # The firewall CLI may be absent when the firewall step was skipped.
-        # The action file ships with fail2ban anyway, so probe the command.
-        warn "No usable firewall command found. fail2ban keeps its package default ban action."
-    elif [[ ! -f "/etc/fail2ban/action.d/${action}.conf" ]]; then
-        warn "fail2ban action ${action} is missing. The package default ban action will be used."
-        action=""
-    fi
+    local tmp
     tmp="$(mktemp)"
-    render_jail "${tmp}" "${action}"
+    render_jail "${tmp}" "${action}" "${backend}"
 
     arm_rollback
-    mkdir -p -- /etc/fail2ban/jail.d
-    install -m 0644 -o root -g root "${tmp}" "${JAIL_TARGET}"
+    run_cmd mkdir -p -- /etc/fail2ban/jail.d
+    install_file 0644 "${tmp}" "${JAIL_TARGET}"
     rm -f -- "${tmp}"
     success "Installed ${JAIL_TARGET}"
 
-    systemctl enable --now fail2ban
+    if dry_run; then
+        # The jail file does not exist yet, so reloading or checking the live
+        # daemon would describe the untouched host instead of the plan.
+        info "Dry run: skipping fail2ban reload and sshd jail proof."
+        disarm_rollback
+        success "fail2ban hardening plan is complete."
+        return 0
+    fi
+
+    svc_enable_now fail2ban || return 1
     if ! fail2ban-client reload; then
         error "fail2ban rejected the jail. Rolling back."
         rollback_component
@@ -186,6 +171,7 @@ main() {
 
     require_root
     detect_os
+    detect_init
 
     if [[ "${ACTION}" == "rollback" ]]; then
         confirm "Roll back the latest fail2ban backup?" || exit 1
@@ -193,6 +179,7 @@ main() {
         exit 0
     fi
 
+    require_init_tools || return 1
     apply_port_default
     validate_port
     apply_fail2ban

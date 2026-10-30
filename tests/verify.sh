@@ -11,8 +11,6 @@ source "${SCRIPT_DIR}/../lib/common.sh"
 FAILURES=0
 SKIP_FIREWALL=0
 SKIP_FAIL2BAN=0
-SSH_DROPIN="/etc/ssh/sshd_config.d/00-linux-server-bootstrap.conf"
-JAIL_TARGET="/etc/fail2ban/jail.d/00-linux-server-bootstrap.conf"
 
 usage() {
     cat <<EOF
@@ -79,12 +77,26 @@ effective_has() {
     printf '%s\n' "${SSH_EFFECTIVE}" | grep -Eiq "${pattern}"
 }
 
+# The policy file depends on how ssh.sh was able to install it.
+ssh_policy_installed() {
+    local style
+    style="$(state_value SSH_DROPIN_STYLE)"
+    [[ -n "${style}" ]] || style="dropin"
+
+    if [[ "${style}" == "managed_block" ]]; then
+        grep -qxF "${SSH_BLOCK_BEGIN}" "${SSH_MAIN_CONFIG}"
+    else
+        [[ -f "${SSH_CONFIG_TARGET}" ]]
+    fi
+}
+
 check_ssh() {
-    if [[ ! -f "${SSH_DROPIN}" ]]; then
-        fail "SSH drop-in is missing: ${SSH_DROPIN}"
+    if ssh_policy_installed; then
+        pass "SSH policy is installed"
+    else
+        fail "SSH policy is missing: ${SSH_CONFIG_TARGET} or the ${SSH_BLOCK_BEGIN} block"
         return 0
     fi
-    pass "SSH drop-in exists"
 
     if ! sshd -t 2>/dev/null; then
         fail "sshd -t failed"
@@ -149,36 +161,20 @@ check_ssh() {
     fi
 }
 
-ufw_lists_port() {
-    # Match the rule column exactly, so port 22 does not pass on a 222/tcp rule.
-    ufw status | awk -v rule="${SSH_PORT}/tcp" '$1 == rule { found = 1 } END { exit found ? 0 : 1 }'
-}
-
 check_firewall() {
-    if [[ "${OS_FAMILY}" == "debian" ]]; then
-        if command -v ufw >/dev/null 2>&1 && ufw status | head -n 1 | grep -q 'Status: active'; then
-            pass "ufw is active"
-        else
-            fail "ufw is not active"
-        fi
-        if command -v ufw >/dev/null 2>&1 && ufw_lists_port; then
-            pass "ufw has a rule for ${SSH_PORT}/tcp"
-        else
-            fail "ufw does not list ${SSH_PORT}/tcp"
-        fi
+    local backend
+    backend="$(drv_fw_backend)"
+
+    if drv_fw_is_active; then
+        pass "${backend} is active"
     else
-        if systemctl is-active --quiet firewalld; then
-            pass "firewalld is active"
-        else
-            fail "firewalld is not active"
-        fi
-        if firewall-cmd --query-port="${SSH_PORT}/tcp" >/dev/null 2>&1; then
-            pass "firewalld allows ${SSH_PORT}/tcp"
-        elif [[ "${SSH_PORT}" == "22" ]] && firewall-cmd --query-service=ssh >/dev/null 2>&1; then
-            pass "firewalld allows the ssh service"
-        else
-            fail "firewalld does not allow ${SSH_PORT}/tcp"
-        fi
+        fail "${backend} is not active"
+    fi
+
+    if drv_fw_port_is_open "${SSH_PORT}"; then
+        pass "${backend} allows ${SSH_PORT}/tcp"
+    else
+        fail "${backend} does not allow ${SSH_PORT}/tcp"
     fi
 }
 
@@ -231,6 +227,7 @@ main() {
 
     require_root
     detect_os
+    detect_init
     apply_port_default
     validate_port
     load_saved_users_if_empty

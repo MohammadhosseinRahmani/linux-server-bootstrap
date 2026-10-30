@@ -10,24 +10,8 @@ fi
 _LIB_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(cd -- "${_LIB_DIR}/.." && pwd)"
 
-BACKUP_ROOT="${BACKUP_ROOT:-/var/backups/linux-server-bootstrap}"
-STATE_DIR="${STATE_DIR:-/etc/linux-server-bootstrap}"
-STATE_FILE="${STATE_DIR}/state.env"
-LOG_FILE="${LOG_FILE:-/var/log/linux-server-bootstrap.log}"
-
-SSH_PORT="${SSH_PORT:-22}"
-SSH_ALLOW_USERS=()
-PORT_SET="${PORT_SET:-0}"
-ASSUME_YES="${ASSUME_YES:-0}"
-ACTION="${ACTION:-apply}"
-SHOW_HELP="${SHOW_HELP:-0}"
-OS_FAMILY="${OS_FAMILY:-}"
-OS_ID="${OS_ID:-}"
-PKG_MGR="${PKG_MGR:-}"
-BACKUP_DIR="${BACKUP_DIR:-}"
-ROLLBACK_ARMED="${ROLLBACK_ARMED:-0}"
-ROLLBACK_DONE="${ROLLBACK_DONE:-0}"
-
+# Logging must exist before the helpers below are sourced, because they report
+# through info/warn/error.
 if [[ -t 1 ]]; then
     BLUE='\033[0;34m'
     YELLOW='\033[1;33m'
@@ -69,6 +53,37 @@ success() {
     _log OK "$*"
 }
 
+# shellcheck source=os.sh
+source "${_LIB_DIR}/os.sh"
+# shellcheck source=init.sh
+source "${_LIB_DIR}/init.sh"
+
+BACKUP_ROOT="${BACKUP_ROOT:-/var/backups/linux-server-bootstrap}"
+STATE_DIR="${STATE_DIR:-/etc/linux-server-bootstrap}"
+STATE_FILE="${STATE_DIR}/state.env"
+LOG_FILE="${LOG_FILE:-/var/log/linux-server-bootstrap.log}"
+
+# Shared paths and markers, so a stage and the verifier cannot disagree about
+# where the SSH policy lives.
+SSH_MAIN_CONFIG="${SSH_MAIN_CONFIG:-/etc/ssh/sshd_config}"
+SSH_CONFIG_DIR="${SSH_CONFIG_DIR:-/etc/ssh/sshd_config.d}"
+SSH_CONFIG_TARGET="${SSH_CONFIG_DIR}/00-linux-server-bootstrap.conf"
+SSH_INCLUDE_LINE='Include /etc/ssh/sshd_config.d/*.conf'
+SSH_BLOCK_BEGIN='# BEGIN linux-server-bootstrap'
+SSH_BLOCK_END='# END linux-server-bootstrap'
+JAIL_TARGET="${JAIL_TARGET:-/etc/fail2ban/jail.d/00-linux-server-bootstrap.conf}"
+
+SSH_PORT="${SSH_PORT:-22}"
+SSH_ALLOW_USERS=()
+PORT_SET="${PORT_SET:-0}"
+ASSUME_YES="${ASSUME_YES:-0}"
+ACTION="${ACTION:-apply}"
+SHOW_HELP="${SHOW_HELP:-0}"
+BACKUP_DIR="${BACKUP_DIR:-}"
+ROLLBACK_ARMED="${ROLLBACK_ARMED:-0}"
+ROLLBACK_DONE="${ROLLBACK_DONE:-0}"
+DRY_RUN="${DRY_RUN:-0}"
+
 require_root() {
     if [[ "${EUID}" -ne 0 ]]; then
         error "This script must be run as root."
@@ -76,41 +91,53 @@ require_root() {
     fi
 }
 
-detect_os() {
-    if [[ ! -r /etc/os-release ]]; then
-        error "/etc/os-release is missing. This script supports Debian and RPM Linux only."
+# Commands that change system state go through run_cmd, so --dry-run can print
+# the intent without touching the host.
+run_cmd() {
+    if [[ "${DRY_RUN}" -eq 1 ]]; then
+        echo "  [dry-run] $*"
+        _log DRYRUN "$*"
+        return 0
+    fi
+    "$@"
+}
+
+dry_run() {
+    [[ "${DRY_RUN}" -eq 1 ]]
+}
+
+# File writes go through install_file so a dry run never modifies the host.
+install_file() {
+    local mode="$1"
+    local src="$2"
+    local dest="$3"
+    if dry_run; then
+        echo "  [dry-run] install ${src} -> ${dest} (mode ${mode})"
+        _log DRYRUN "install ${dest}"
+        return 0
+    fi
+    install -m "${mode}" -o root -g root "${src}" "${dest}"
+}
+
+require_command() {
+    local cmd="$1"
+    if ! command -v "${cmd}" >/dev/null 2>&1; then
+        error "Required command is missing: ${cmd}"
         return 1
     fi
+}
 
-    # shellcheck disable=SC1091
-    source /etc/os-release
-    OS_ID="${ID:-unknown}"
-    local like="${ID_LIKE:-}"
-    local probe=" ${OS_ID} ${like} "
+# Read-only runs must not need a package manager, so this is called only by
+# stages that install something.
+require_pkg_mgr() {
+    require_command "${PKG_MGR}" || return 1
+}
 
-    case "${probe}" in
-        *debian*|*ubuntu*)
-            OS_FAMILY="debian"
-            PKG_MGR="apt"
-            ;;
-        *rhel*|*fedora*|*centos*|*rocky*|*almalinux*|*ol*|*amzn*)
-            OS_FAMILY="rhel"
-            if command -v dnf >/dev/null 2>&1; then
-                PKG_MGR="dnf"
-            elif command -v yum >/dev/null 2>&1; then
-                PKG_MGR="yum"
-            else
-                error "Neither dnf nor yum is available."
-                return 1
-            fi
-            ;;
-        *)
-            error "Unsupported distribution: ${OS_ID}. Use a Debian-family or RPM-family server."
-            return 1
-            ;;
-    esac
-
-    info "Detected ${OS_ID} (${OS_FAMILY}, ${PKG_MGR})."
+require_init_tools() {
+    require_init || return 1
+    if [[ "${INIT_SYSTEM}" == "systemd" ]]; then
+        require_command systemctl || return 1
+    fi
 }
 
 parse_standard_args() {
@@ -135,6 +162,10 @@ parse_standard_args() {
                 ;;
             --yes)
                 ASSUME_YES=1
+                shift
+                ;;
+            --dry-run)
+                DRY_RUN=1
                 shift
                 ;;
             --rollback)
@@ -219,6 +250,11 @@ load_saved_users_if_empty() {
 }
 
 save_state() {
+    if dry_run; then
+        echo "  [dry-run] save state ${SSH_PORT} ${SSH_ALLOW_USERS[*]} -> ${STATE_FILE}"
+        _log DRYRUN "save_state"
+        return 0
+    fi
     load_saved_users_if_empty
     mkdir -p -- "${STATE_DIR}"
     chmod 0755 "${STATE_DIR}"
@@ -230,10 +266,29 @@ save_state() {
         printf 'SSH_ALLOW_USERS_LINE=%s\n' "${SSH_ALLOW_USERS[*]}"
         printf 'OS_FAMILY=%s\n' "${OS_FAMILY}"
         printf 'OS_ID=%s\n' "${OS_ID}"
+        if [[ -n "${SSH_DROPIN_STYLE:-}" ]]; then
+            printf 'SSH_DROPIN_STYLE=%s\n' "${SSH_DROPIN_STYLE}"
+        fi
     } > "${tmp}"
     install -m 0644 -o root -g root "${tmp}" "${STATE_FILE}"
     rm -f -- "${tmp}"
     info "Saved state to ${STATE_FILE}"
+}
+
+state_value() {
+    local key="$1"
+    [[ -f "${STATE_FILE}" ]] || return 0
+    awk -F= -v want="${key}" '$1 == want { print substr($0, index($0, "=") + 1); exit }' "${STATE_FILE}"
+}
+
+# fail2ban reads logs through journald on systemd hosts and from the auth log
+# everywhere else, so the backend follows the init system rather than the distro.
+pick_fail2ban_backend() {
+    if [[ "${INIT_SYSTEM}" == "systemd" ]]; then
+        printf 'systemd\n'
+    else
+        printf 'auto\n'
+    fi
 }
 
 confirm() {
@@ -257,36 +312,20 @@ confirm() {
     fi
 }
 
-unit_exists() {
-    local unit="$1"
-    local unit_type="${2:-service}"
-    systemctl list-unit-files --no-pager --no-legend --type="${unit_type}" "${unit}" 2>/dev/null \
-        | awk -v name="${unit}" '$1 == name { found = 1 } END { exit found ? 0 : 1 }'
-}
-
 current_ssh_server_port() {
     if [[ -n "${SSH_CONNECTION:-}" ]]; then
         awk '{ print $4 }' <<< "${SSH_CONNECTION}"
     fi
 }
 
-pkg_try_install() {
-    case "${PKG_MGR}" in
-        apt)
-            export DEBIAN_FRONTEND=noninteractive
-            apt-get update && apt-get install -y "$@"
-            ;;
-        dnf)
-            dnf install -y "$@"
-            ;;
-        yum)
-            yum install -y "$@"
-            ;;
-        *)
-            error "Package manager is not set. Call detect_os first."
-            return 1
-            ;;
-    esac
+# The port this SSH session is on, when it differs from the port being
+# configured. A firewall must keep it open so the operator is not cut off.
+extra_session_port() {
+    local current
+    current="$(current_ssh_server_port || true)"
+    if [[ -n "${current}" && "${current}" != "${SSH_PORT}" ]]; then
+        printf '%s' "${current}"
+    fi
 }
 
 backup_begin() {
@@ -471,4 +510,19 @@ unexpected_rollback() {
 finish_rollback_pointer() {
     local component="$1"
     promote_previous_backup "${component}"
+}
+
+# Shared gate for every stage's rollback_component. A dry run must never
+# restore or delete host files, and a stage must not roll back twice when both
+# the explicit path and the ERR trap fire.
+rollback_preflight() {
+    if dry_run; then
+        warn "Dry run: nothing was applied, so nothing is restored."
+        return 1
+    fi
+    if [[ "${ROLLBACK_DONE}" -eq 1 ]]; then
+        return 1
+    fi
+    ROLLBACK_DONE=1
+    return 0
 }

@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
-# Apply the SSH drop-in, validate it, reload sshd, and roll back on failure.
-# Supports Debian-family and RPM-family servers.
+# Apply the SSH policy, validate it, reload sshd, and roll back on failure.
+#
+# Distribution-specific behaviour comes from the loaded driver: the unit name,
+# whether ssh.socket carries the port, and the fail2ban action. The rendering
+# method is chosen by probing sshd itself, because a policy that silently does
+# not load is worse than no policy.
 
 set -euo pipefail
 
@@ -9,44 +13,45 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/../lib/common.sh"
 
 SSH_CONFIG_SOURCE="${PROJECT_DIR}/config/sshd_config.conf"
-SSH_MAIN_CONFIG="/etc/ssh/sshd_config"
-SSH_CONFIG_DIR="/etc/ssh/sshd_config.d"
-SSH_CONFIG_TARGET="${SSH_CONFIG_DIR}/00-linux-server-bootstrap.conf"
-SSH_SOCKET_DROPIN="/etc/systemd/system/ssh.socket.d/00-linux-server-bootstrap.conf"
-SSH_UNIT=""
+SSH_DROPIN_STYLE="dropin"
+SSH_UNIT="${SSH_UNIT:-}"
 
 usage() {
     cat <<EOF
 Usage: bash hardening/ssh.sh --user NAME [--user NAME...] [--port N] [--yes]
        bash hardening/ssh.sh --rollback
+       bash hardening/ssh.sh --dry-run
 
-Installs ${SSH_CONFIG_TARGET} and reloads SSH.
-Password login and root login are disabled. Every --user account must
-already exist and must have a public key in ~/.ssh/authorized_keys.
+Restricts SSH to the listed accounts, disables password and root login, and
+reloads SSH. Every --user account must already exist and must have a public key
+in ~/.ssh/authorized_keys.
+
+Policy is installed as ${SSH_CONFIG_TARGET} when sshd supports Include, and as a
+marked block inside ${SSH_MAIN_CONFIG} on older builds.
 
 Backups: ${BACKUP_ROOT}/ssh/<timestamp>
 EOF
 }
 
+# OpenSSH reads Include from 7.3 onward. Anything older needs the managed block.
+sshd_supports_include() {
+    local version_line major minor
+    version_line="$(ssh -V 2>&1 || true)"
+    if [[ "${version_line}" =~ OpenSSH_([0-9]+)\.([0-9]+) ]]; then
+        major="${BASH_REMATCH[1]}"
+        minor="${BASH_REMATCH[2]}"
+        if (( major > 7 )) || (( major == 7 && minor >= 3 )); then
+            return 0
+        fi
+        return 1
+    fi
+    warn "Could not parse the sshd version from '${version_line}'. Assuming Include is supported."
+    return 0
+}
+
 detect_ssh_unit() {
-    if systemctl is-active --quiet ssh 2>/dev/null && unit_exists ssh.service; then
-        SSH_UNIT="ssh"
-        return 0
-    fi
-    if systemctl is-active --quiet sshd 2>/dev/null && unit_exists sshd.service; then
-        SSH_UNIT="sshd"
-        return 0
-    fi
-    if unit_exists ssh.service; then
-        SSH_UNIT="ssh"
-        return 0
-    fi
-    if unit_exists sshd.service; then
-        SSH_UNIT="sshd"
-        return 0
-    fi
-    error "Could not find ssh.service or sshd.service."
-    return 1
+    SSH_UNIT="$(drv_ssh_unit)" || return 1
+    printf '%s\n' "${SSH_UNIT}"
 }
 
 user_has_authorized_key() {
@@ -177,7 +182,6 @@ render_dropin() {
 }
 
 ensure_sshd_include() {
-    local include_line='Include /etc/ssh/sshd_config.d/*.conf'
     if grep -Eq '^[[:space:]]*Include[[:space:]]+/etc/ssh/sshd_config\.d/\*\.conf([[:space:]]|$)' "${SSH_MAIN_CONFIG}"; then
         info "sshd_config already includes sshd_config.d"
         return 0
@@ -186,10 +190,10 @@ ensure_sshd_include() {
     local tmp
     tmp="$(mktemp)"
     {
-        printf '%s\n' "${include_line}"
+        printf '%s\n' "${SSH_INCLUDE_LINE}"
         cat -- "${SSH_MAIN_CONFIG}"
     } > "${tmp}"
-    install -m 0644 -o root -g root "${tmp}" "${SSH_MAIN_CONFIG}"
+    install_file 0644 "${tmp}" "${SSH_MAIN_CONFIG}"
     rm -f -- "${tmp}"
     info "Added an Include directive to the top of ${SSH_MAIN_CONFIG}"
 }
@@ -198,37 +202,54 @@ install_dropin() {
     local tmp
     tmp="$(mktemp)"
     render_dropin "${tmp}"
-    mkdir -p -- "${SSH_CONFIG_DIR}"
-    install -m 0644 -o root -g root "${tmp}" "${SSH_CONFIG_TARGET}"
+    run_cmd mkdir -p -- "${SSH_CONFIG_DIR}"
+    install_file 0644 "${tmp}" "${SSH_CONFIG_TARGET}"
     rm -f -- "${tmp}"
     success "Installed ${SSH_CONFIG_TARGET}"
 }
 
-configure_debian_socket() {
-    if [[ "${OS_FAMILY}" != "debian" ]]; then
+# Older sshd builds never read sshd_config.d, so the same policy is written into
+# the main file between markers that a later run replaces instead of stacking.
+install_managed_block() {
+    local tmp block
+    tmp="$(mktemp)"
+    block="$(mktemp)"
+    render_dropin "${block}"
+
+    awk -v begin="${SSH_BLOCK_BEGIN}" -v end="${SSH_BLOCK_END}" '
+        $0 == begin { skipping = 1; next }
+        $0 == end { skipping = 0; next }
+        !skipping { print }
+    ' "${SSH_MAIN_CONFIG}" > "${tmp}"
+
+    {
+        printf '%s\n' "${SSH_BLOCK_BEGIN}"
+        cat -- "${block}"
+        printf '%s\n' "${SSH_BLOCK_END}"
+    } >> "${tmp}"
+
+    install_file 0644 "${tmp}" "${SSH_MAIN_CONFIG}"
+    rm -f -- "${tmp}" "${block}"
+    success "Updated the ${SSH_BLOCK_BEGIN} block in ${SSH_MAIN_CONFIG}"
+}
+
+configure_socket_port() {
+    # Returns 0 when the driver moved the port into a socket unit.
+    local dropin
+    if dropin="$(drv_ssh_socket_setup "${SSH_PORT}")"; then
+        if dry_run; then
+            return 0
+        fi
+        if [[ -n "${SSH_CONNECTION:-}" ]]; then
+            warn "ssh.socket was not restarted, so the current session stays up."
+            warn "After a second session works on port ${SSH_PORT}, run: systemctl restart ssh.socket"
+        else
+            info "No SSH session is attached. Restarting ssh.socket."
+            svc_restart ssh.socket
+        fi
         return 0
     fi
-    if ! unit_exists ssh.socket socket; then
-        return 0
-    fi
-
-    mkdir -p -- "$(dirname -- "${SSH_SOCKET_DROPIN}")"
-    cat > "${SSH_SOCKET_DROPIN}" <<EOF
-[Socket]
-ListenStream=
-ListenStream=${SSH_PORT}
-EOF
-    chmod 0644 "${SSH_SOCKET_DROPIN}"
-    systemctl daemon-reload
-
-    if [[ -n "${SSH_CONNECTION:-}" ]]; then
-        warn "ssh.socket was not restarted, so the current session stays up."
-        warn "After a second session works on port ${SSH_PORT}, run: systemctl restart ssh.socket"
-        return 0
-    fi
-
-    info "No SSH session is attached. Restarting ssh.socket."
-    systemctl restart ssh.socket
+    return 1
 }
 
 validate_config() {
@@ -243,19 +264,19 @@ validate_config() {
 
 reload_ssh() {
     info "Reloading ${SSH_UNIT}.service..."
-    if systemctl is-active --quiet "${SSH_UNIT}"; then
-        if systemctl reload "${SSH_UNIT}"; then
+    if svc_is_active "${SSH_UNIT}.service"; then
+        if svc_reload "${SSH_UNIT}.service"; then
             success "SSH service reloaded."
             return 0
         fi
         error "Failed to reload ${SSH_UNIT}.service"
         return 1
     fi
-    if systemctl is-active --quiet "${SSH_UNIT}.socket"; then
+    if svc_is_active "${SSH_UNIT}.socket"; then
         success "${SSH_UNIT}.socket is active. The next connection reads the new configuration."
         return 0
     fi
-    if systemctl enable --now "${SSH_UNIT}"; then
+    if svc_enable_now "${SSH_UNIT}.service"; then
         success "Started ${SSH_UNIT}.service"
         return 0
     fi
@@ -264,7 +285,7 @@ reload_ssh() {
 }
 
 reload_restored_ssh() {
-    systemctl daemon-reload || true
+    svc_daemon_reload
     if ! command -v sshd >/dev/null 2>&1; then
         return 0
     fi
@@ -282,10 +303,7 @@ reload_restored_ssh() {
 
 rollback_component() {
     trap - ERR
-    if [[ "${ROLLBACK_DONE}" -eq 1 ]]; then
-        return 0
-    fi
-    ROLLBACK_DONE=1
+    rollback_preflight || return 0
 
     local dir="${BACKUP_DIR:-}"
     if [[ -z "${dir}" ]]; then
@@ -302,14 +320,10 @@ rollback_component() {
 check_prerequisites() {
     if ! command -v sshd >/dev/null 2>&1; then
         info "Installing openssh-server..."
-        pkg_try_install openssh-server
+        drv_pkg_install openssh-server || return 1
     fi
     if ! command -v sshd >/dev/null 2>&1; then
         error "sshd is still not installed."
-        return 1
-    fi
-    if ! command -v systemctl >/dev/null 2>&1; then
-        error "systemctl is required."
         return 1
     fi
     if [[ ! -f "${SSH_CONFIG_SOURCE}" ]]; then
@@ -329,29 +343,52 @@ apply_ssh() {
     done
     guard_lockout || return 1
 
+    if sshd_supports_include; then
+        SSH_DROPIN_STYLE="dropin"
+    else
+        SSH_DROPIN_STYLE="managed_block"
+        warn "This sshd build predates Include, so the policy goes into ${SSH_MAIN_CONFIG} instead."
+    fi
+
     cat <<EOF
 SSH hardening will:
   - allow only: ${SSH_ALLOW_USERS[*]}
   - listen on port: ${SSH_PORT}
   - disable password login and root login
+  - install the policy as a ${SSH_DROPIN_STYLE}
   - back up changed files under ${BACKUP_ROOT}/ssh
 EOF
     confirm "Apply SSH hardening?" || return 1
 
-    detect_ssh_unit
+    detect_ssh_unit || return 1
     info "SSH service is ${SSH_UNIT}.service"
-    check_prerequisites
+    check_prerequisites || return 1
 
     backup_begin ssh
     backup_file "${SSH_MAIN_CONFIG}"
     backup_file "${SSH_CONFIG_TARGET}"
-    backup_file "${SSH_SOCKET_DROPIN}"
+    if [[ -n "${SSH_SOCKET_DROPIN:-}" ]]; then
+        backup_file "${SSH_SOCKET_DROPIN}"
+    fi
     backup_file "${STATE_FILE}"
 
     arm_rollback
-    ensure_sshd_include
-    install_dropin
-    configure_debian_socket
+    if [[ "${SSH_DROPIN_STYLE}" == "dropin" ]]; then
+        ensure_sshd_include
+        install_dropin
+    else
+        install_managed_block
+    fi
+    configure_socket_port || true
+
+    if dry_run; then
+        # Nothing was written, so there is no configuration to validate or
+        # daemon to reload. Validating the untouched host would be misleading.
+        info "Dry run: skipping sshd validation, reload, and effective-port proof."
+        disarm_rollback
+        success "SSH hardening plan is complete."
+        return 0
+    fi
 
     if ! validate_config; then
         error "SSH hardening aborted."
@@ -365,11 +402,18 @@ EOF
         exit 1
     fi
 
+    # Confirm the loaded daemon really carries the policy, not just the files.
+    if ! sshd -T 2>/dev/null | grep -Eiq "^port ${SSH_PORT}$"; then
+        error "sshd -T does not report port ${SSH_PORT}. Restoring the backup."
+        rollback_component
+        exit 1
+    fi
+
     save_state
     disarm_rollback
     success "SSH hardening completed."
-    if [[ "${SSH_PORT}" != "22" && "${OS_FAMILY}" == "debian" ]]; then
-        warn "If ssh.socket is enabled, restart it from another session: systemctl restart ssh.socket"
+    if [[ "${SSH_PORT}" != "22" ]]; then
+        warn "Open a second session on port ${SSH_PORT} before closing this one."
     fi
 }
 
@@ -385,6 +429,7 @@ main() {
 
     require_root
     detect_os
+    detect_init
 
     if [[ "${ACTION}" == "rollback" ]]; then
         confirm "Roll back the latest SSH backup?" || exit 1
@@ -393,6 +438,7 @@ main() {
         exit 0
     fi
 
+    require_init_tools || return 1
     apply_port_default
     validate_port
     require_allow_users

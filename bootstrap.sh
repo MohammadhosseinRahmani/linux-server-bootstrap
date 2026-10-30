@@ -21,11 +21,13 @@ Options:
   --user NAME         Account that may log in with a public key. Repeatable.
   --port N            SSH port. Default: saved port, or 22.
   --yes               Apply without the YES prompt.
+  --dry-run           Print what would change without touching the host.
   --skip-firewall     Do not change the firewall.
   --skip-fail2ban     Do not install or change fail2ban.
   --rollback          Restore fail2ban, then the firewall, then SSH.
 
-Supported systems: Debian 11+, Ubuntu 20.04+, RHEL/Rocky/AlmaLinux 8+, Fedora.
+Supported systems: Debian and Ubuntu family (including non-systemd variants),
+RHEL/Rocky/AlmaLinux/Fedora and RPM derivatives, openSUSE Leap and SLES.
 Run this on the server as root, after the allowed user has an SSH key.
 EOF
 }
@@ -49,7 +51,7 @@ parse_bootstrap_args() {
                 parse_standard_args "$1" "$2" || return 2
                 shift 2
                 ;;
-            --yes|--rollback|-h|--help)
+            --yes|--rollback|--dry-run|-h|--help)
                 parse_standard_args "$1" || return 2
                 shift
                 ;;
@@ -112,21 +114,33 @@ EOF
         users+=(--user "${user_name}")
     done
 
+    # DRY_RUN is not exported, so each stage has to be told to plan only.
+    local -a dry_flags=()
+    if dry_run; then
+        dry_flags=(--dry-run)
+        warn "Dry run: no stage will change the host, so verification is skipped."
+    fi
+
     run_step "SSH hardening" \
-        bash "${SCRIPT_DIR}/hardening/ssh.sh" --yes --port "${SSH_PORT}" "${users[@]}"
+        bash "${SCRIPT_DIR}/hardening/ssh.sh" --yes "${dry_flags[@]}" --port "${SSH_PORT}" "${users[@]}"
 
     if [[ "${SKIP_FIREWALL}" -eq 0 ]]; then
         run_step "firewall" \
-            bash "${SCRIPT_DIR}/hardening/firewall.sh" --yes --port "${SSH_PORT}"
+            bash "${SCRIPT_DIR}/hardening/firewall.sh" --yes "${dry_flags[@]}" --port "${SSH_PORT}"
     else
         warn "Skipping the firewall."
     fi
 
     if [[ "${SKIP_FAIL2BAN}" -eq 0 ]]; then
         run_step "fail2ban" \
-            bash "${SCRIPT_DIR}/hardening/fail2ban.sh" --yes --port "${SSH_PORT}"
+            bash "${SCRIPT_DIR}/hardening/fail2ban.sh" --yes "${dry_flags[@]}" --port "${SSH_PORT}"
     else
         warn "Skipping fail2ban."
+    fi
+
+    if dry_run; then
+        success "Dry run finished. Nothing was applied."
+        return 0
     fi
 
     local -a verify_args=(--port "${SSH_PORT}" "${users[@]}")
@@ -153,6 +167,7 @@ main() {
 
     require_root
     detect_os
+    detect_init
 
     if [[ "${ACTION}" == "rollback" ]]; then
         rollback_all
