@@ -7,6 +7,10 @@
 
 # shellcheck source=_firewalld.sh
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/_firewalld.sh"
+# shellcheck source=_mac.sh
+source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/_mac.sh"
+# shellcheck source=_pam.sh
+source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/_pam.sh"
 
 SSH_SOCKET_DROPIN=""
 
@@ -84,6 +88,10 @@ drv_f2b_prepare_repo() {
 
 drv_mac_name() {
     printf 'selinux\n'
+}
+
+drv_mac_enforce() {
+    mac_enforce_selinux
 }
 
 drv_timezone_apply() {
@@ -165,4 +173,49 @@ drv_crypto_policy() {
         return 1
     fi
     run_cmd update-crypto-policies --set "${profile}"
+}
+
+# EL8 and newer build the stacks with authselect, and the with-faillock feature
+# is the supported way to turn the module on: a hand-edit there is overwritten by
+# the next authselect run. EL7 has authconfig for the same job. Only when neither
+# tool exists is the stack spliced directly.
+drv_lockout_files() {
+    printf '%s\n' /etc/security/faillock.conf "${PAM_DIR}/system-auth" "${PAM_DIR}/password-auth"
+}
+
+drv_lockout_apply() {
+    local deny="${1:-3}" fail_interval="${2:-900}" unlock_time="${3:-900}"
+
+    if ! pam_faillock_module_path >/dev/null 2>&1; then
+        error "pam_faillock.so is not installed, so account lockout cannot be enabled."
+        return 1
+    fi
+
+    faillock_conf_write "${deny}" "${fail_interval}" "${unlock_time}" || return 1
+
+    if command -v authselect >/dev/null 2>&1; then
+        local profile
+        profile="$(authselect current 2>/dev/null | awk '/Profile ID:/ { print $3; exit }')"
+        if [[ -n "${profile}" ]] \
+            && authselect list-features "${profile}" 2>/dev/null | grep -qx with-faillock; then
+            info "Enabling faillock through authselect on profile ${profile}."
+            run_cmd authselect select "${profile}" with-faillock --force
+            return 0
+        fi
+        warn "The authselect profile ${profile:-unknown} has no with-faillock feature, so the stacks are edited directly."
+    elif command -v authconfig >/dev/null 2>&1; then
+        info "Enabling faillock through authconfig."
+        run_cmd authconfig --enablefaillock \
+            --faillockargs="deny=${deny} unlock_time=${unlock_time}" --update
+        return 0
+    fi
+
+    # Each stack carries its own auth and account lines on EL, so the same file is
+    # spliced for both record types.
+    pam_splice_faillock "${PAM_DIR}/system-auth" "${PAM_DIR}/system-auth" || return 1
+    pam_splice_faillock "${PAM_DIR}/password-auth" "${PAM_DIR}/password-auth"
+}
+
+drv_pwquality_pkg() {
+    printf 'libpwquality\n'
 }

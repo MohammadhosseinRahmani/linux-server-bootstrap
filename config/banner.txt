@@ -1,0 +1,14 @@
+# linux-server-bootstrap legal warning banner
+# Installed as /etc/issue, /etc/issue.net and, where it is a real file, /etc/motd.
+#
+# hardening/banner.sh substitutes __HOSTNAME__ and points sshd's Banner at the
+# .net copy when this sshd build reads sshd_config.d.
+#
+# Keep this text factual. A banner that claims consent to monitoring where the
+# law does not grant it is worse than no banner, so the wording below is the
+# minimum CIS 11.2 asks for: identify the system, state that access is
+# restricted, and state that activity is recorded.
+Unauthorized access to __HOSTNAME__ is prohibited.
+This system is for authorised use only. All activity on this system is logged,
+and use may be monitored and disclosed to authorised personnel without further
+notice. If you are not authorised, disconnect now.

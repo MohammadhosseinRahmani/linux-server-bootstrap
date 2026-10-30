@@ -37,6 +37,14 @@ svc_daemon_reload() {
     fi
 }
 
+# unit files are re-read on daemon-reload, but the [Manager] section of
+# system.conf.d is only read again when systemd replaces itself.
+svc_daemon_reexec() {
+    if [[ "${INIT_SYSTEM}" == "systemd" ]]; then
+        run_cmd systemctl daemon-reexec
+    fi
+}
+
 svc_is_active() {
     local unit
     unit="$(init_unit_name "$1")"
@@ -84,6 +92,38 @@ svc_disable_now() {
             run_cmd chkconfig "${unit}" off
         fi
         run_cmd service "${unit}" stop
+    fi
+}
+
+svc_mask() {
+    local unit
+    unit="$(init_unit_name "$1")"
+    if [[ "${INIT_SYSTEM}" == "systemd" ]]; then
+        run_cmd systemctl mask "${unit}"
+    fi
+}
+
+svc_unmask() {
+    local unit
+    unit="$(init_unit_name "$1")"
+    if [[ "${INIT_SYSTEM}" == "systemd" ]]; then
+        run_cmd systemctl unmask "${unit}"
+    fi
+}
+
+# Read-only. An unknown answer means the host cannot report the state, which a
+# stage has to treat as unknown rather than as disabled.
+svc_is_enabled() {
+    local unit
+    unit="$(init_unit_name "$1")"
+    if [[ "${INIT_SYSTEM}" == "systemd" ]]; then
+        if systemctl is-enabled --quiet "${unit}" 2>/dev/null; then
+            printf 'enabled\n'
+        else
+            printf 'disabled\n'
+        fi
+    else
+        printf 'unknown\n'
     fi
 }
 

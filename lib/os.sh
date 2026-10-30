@@ -37,11 +37,13 @@ DRIVER_CONTRACT=(
     drv_fw_status_text
     drv_ssh_unit drv_ssh_socket_setup
     drv_f2b_action drv_f2b_prepare_repo
-    drv_mac_name drv_mac_install drv_mac_status
+    drv_mac_name drv_mac_install drv_mac_status drv_mac_enforce
     drv_sysctl_dir drv_sysctl_file drv_audit_pkg
+    drv_audit_rules_file drv_audit_apply drv_legacy_services
     drv_timesync_pkg drv_timesync_unit
     drv_timezone_apply drv_timezone_file
     drv_locale_apply drv_locale_files
+    drv_lockout_files drv_lockout_apply drv_pwquality_pkg
     drv_unattended_setup drv_crypto_policy
 )
 

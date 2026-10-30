@@ -73,6 +73,22 @@ SSH_BLOCK_BEGIN='# BEGIN linux-server-bootstrap'
 SSH_BLOCK_END='# END linux-server-bootstrap'
 JAIL_TARGET="${JAIL_TARGET:-/etc/fail2ban/jail.d/00-linux-server-bootstrap.conf}"
 
+# OpenSSH reads Include from 7.3 onward. Anything older needs the managed block.
+sshd_supports_include() {
+    local version_line major minor
+    version_line="$(ssh -V 2>&1 || true)"
+    if [[ "${version_line}" =~ OpenSSH_([0-9]+)\.([0-9]+) ]]; then
+        major="${BASH_REMATCH[1]}"
+        minor="${BASH_REMATCH[2]}"
+        if (( major > 7 )) || (( major == 7 && minor >= 3 )); then
+            return 0
+        fi
+        return 1
+    fi
+    warn "Could not parse the sshd version from '${version_line}'. Assuming Include is supported."
+    return 0
+}
+
 SSH_PORT="${SSH_PORT:-22}"
 SSH_ALLOW_USERS=()
 PORT_SET="${PORT_SET:-0}"
@@ -125,6 +141,39 @@ require_command() {
         error "Required command is missing: ${cmd}"
         return 1
     fi
+}
+
+# Rewrites the text between two marker lines, appending it when the file has no
+# block yet. Stages that edit a distro-owned file use markers so a re-run
+# replaces its own previous answer instead of stacking duplicates.
+managed_block_set() {
+    local file="$1"
+    local begin="$2"
+    local end="$3"
+    local content_file="$4"
+
+    if [[ ! -f "${file}" ]]; then
+        error "File to edit is missing: ${file}"
+        return 1
+    fi
+
+    local tmp
+    tmp="$(mktemp)"
+    awk -v begin="${begin}" -v end="${end}" '
+        $0 == begin { skipping = 1; next }
+        $0 == end { skipping = 0; next }
+        !skipping { print }
+    ' "${file}" > "${tmp}"
+    {
+        printf '%s\n' "${begin}"
+        cat -- "${content_file}"
+        printf '%s\n' "${end}"
+    } >> "${tmp}"
+
+    local mode
+    mode="$(stat -c '%a' "${file}" 2>/dev/null || printf '0644')"
+    install_file "${mode}" "${tmp}" "${file}"
+    rm -f -- "${tmp}"
 }
 
 # Read-only runs must not need a package manager, so this is called only by
@@ -464,6 +513,48 @@ save_snapshot() {
     fi
     "$@" > "${BACKUP_DIR}/snapshots/${name}" 2>&1 || true
     info "Saved snapshot ${BACKUP_DIR}/snapshots/${name}"
+}
+
+# A permission change is reversible without restoring file contents, and
+# restoring the contents of a file such as /etc/shadow would undo work another
+# process did in the meantime. The modes are therefore recorded separately.
+record_modes() {
+    local path mode owner
+    if [[ -z "${BACKUP_DIR}" ]]; then
+        error "backup_begin was not called."
+        return 1
+    fi
+    for path in "$@"; do
+        [[ -e "${path}" ]] || continue
+        mode="$(stat -c '%a' "${path}" 2>/dev/null || true)"
+        owner="$(stat -c '%u:%g' "${path}" 2>/dev/null || true)"
+        [[ -n "${mode}" && -n "${owner}" ]] || continue
+        printf '%s %s %s\n' "${path}" "${mode}" "${owner}" >> "${BACKUP_DIR}/snapshots/modes.txt"
+    done
+    if [[ -f "${BACKUP_DIR}/snapshots/modes.txt" ]]; then
+        info "Recorded the current modes of $# path(s)"
+    fi
+}
+
+restore_recorded_modes() {
+    local dir="$1"
+    local record="${dir}/snapshots/modes.txt"
+    if [[ ! -f "${record}" ]]; then
+        info "No recorded modes in ${dir}, so permissions were left alone."
+        return 0
+    fi
+
+    local path mode owner
+    while read -r path mode owner; do
+        [[ -z "${path}" ]] && continue
+        if [[ ! -e "${path}" ]]; then
+            warn "Recorded path is gone: ${path}"
+            continue
+        fi
+        chown -- "${owner}" "${path}"
+        chmod -- "${mode}" "${path}"
+        info "Restored ${path} to mode ${mode} owner ${owner}"
+    done < "${record}"
 }
 
 latest_backup_dir() {

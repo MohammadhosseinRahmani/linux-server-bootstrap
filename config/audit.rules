@@ -1,0 +1,69 @@
+# linux-server-bootstrap audit rules
+# Installed as /etc/audit/rules.d/99-linux-server-bootstrap.rules
+#
+# hardening/audit.sh drops the arch=b32 lines on a host whose kernel has no
+# 32-bit compatibility syscall ABI, so the same file loads on x86_64 and on
+# aarch64.
+#
+# These rules watch the files that decide who can log in, who can escalate, and
+# what the audit system itself is allowed to record.
+
+# Start from a clean set, keep a generous backlog, and never panic on a full
+# backlog: -f 1 single-fails actions, which is reversible from a root shell.
+-D
+-b 8192
+-f 1
+
+# Identity and credential stores
+-w /etc/passwd -p wa -k identity
+-w /etc/group -p wa -k identity
+-w /etc/shadow -p wa -k identity
+-w /etc/gshadow -p wa -k identity
+-w /etc/security/opasswd -p wa -k identity
+
+# Who is allowed to become root
+-w /etc/sudoers -p wa -k scope
+-w /etc/sudoers.d/ -p wa -k scope
+
+# Authentication configuration and the lockout counters
+-w /etc/login.defs -p wa -k login_config
+-w /etc/security/ -p wa -k login_config
+-w /etc/pam.d/ -p wa -k pam
+-w /etc/authselect/ -p wa -k pam
+-w /var/run/faillock/ -p wa -k session
+-w /var/log/lastlog -p wa -k session
+-w /var/log/wtmp -p wa -k session
+-w /var/log/btmp -p wa -k session
+
+# Access decisions the kernel made and the shell asked for
+-a always,exit -F arch=b64 -S all -F exit=-EACCES -F auid>=1000 -F auid!=__AUID_UNSET__ -F key=access
+-a always,exit -F arch=b64 -S all -F exit=-EPERM -F auid>=1000 -F auid!=__AUID_UNSET__ -F key=access
+-a always,exit -F arch=b32 -S all -F exit=-EACCES -F auid>=1000 -F auid!=__AUID_UNSET__ -F key=access
+-a always,exit -F arch=b32 -S all -F exit=-EPERM -F auid>=1000 -F auid!=__AUID_UNSET__ -F key=access
+
+# File deletion and renaming by a logged-in user
+-a always,exit -F arch=b64 -S unlink -S unlinkat -S rename -S renameat -F auid>=1000 -F auid!=__AUID_UNSET__ -F key=delete
+-a always,exit -F arch=b32 -S unlink -S unlinkat -S rename -S renameat -F auid>=1000 -F auid!=__AUID_UNSET__ -F key=delete
+
+# Time changes, because a skewed clock makes every other log untrustworthy
+-a always,exit -F arch=b64 -S adjtimex -S settimeofday -S clock_settime -k time_change
+-a always,exit -F arch=b32 -S adjtimex -S settimeofday -S clock_settime -k time_change
+
+# Kernel modules are the easiest rootkit delivery
+-a always,exit -F arch=b64 -S init_module -S delete_module -S finit_module -k modules
+-a always,exit -F arch=b32 -S init_module -S delete_module -S finit_module -k modules
+
+# Host identity and the files that publish it
+-a always,exit -F arch=b64 -S sethostname -S setdomainname -k system-locale
+-w /etc/issue -p wa -k system-locale
+-w /etc/issue.net -p wa -k system-locale
+-w /etc/hosts -p wa -k system-locale
+-w /etc/hostname -p wa -k system-locale
+
+# Mandatory access control policy
+-w /etc/selinux/ -p wa -k mac_policy
+-w /etc/apparmor.d/ -p wa -k mac_policy
+
+# The audit system watching itself
+-w /etc/audit/ -p wa -k auditconfig
+-w /sbin/auditctl -p x -k audittools

@@ -34,22 +34,6 @@ Backups: ${BACKUP_ROOT}/ssh/<timestamp>
 EOF
 }
 
-# OpenSSH reads Include from 7.3 onward. Anything older needs the managed block.
-sshd_supports_include() {
-    local version_line major minor
-    version_line="$(ssh -V 2>&1 || true)"
-    if [[ "${version_line}" =~ OpenSSH_([0-9]+)\.([0-9]+) ]]; then
-        major="${BASH_REMATCH[1]}"
-        minor="${BASH_REMATCH[2]}"
-        if (( major > 7 )) || (( major == 7 && minor >= 3 )); then
-            return 0
-        fi
-        return 1
-    fi
-    warn "Could not parse the sshd version from '${version_line}'. Assuming Include is supported."
-    return 0
-}
-
 detect_ssh_unit() {
     SSH_UNIT="$(drv_ssh_unit)" || return 1
     printf '%s\n' "${SSH_UNIT}"

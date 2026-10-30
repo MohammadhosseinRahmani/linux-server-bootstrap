@@ -32,7 +32,9 @@ assert_has() {
         ok "${label}"
     else
         nok "${label}: missing '${needle}'"
-        printf '%s\n' "${haystack}" | grep -E '\[dry-run\]|^(family|init|fw_backend|ssh_unit|socket_setup|f2b_action|mac|timesync|timezone_file|locale_files)=' | sed 's/^/        got: /'
+        printf '%s\n' "${haystack}" \
+            | grep -E '\[dry-run\]|^(family|init|fw_backend|ssh_unit|socket_setup|f2b_action|mac|mac_status|timesync|timezone_file|locale_files|audit_rules_file|pwquality_pkg|lockout_files|legacy_all)=' \
+            | sed 's/^/        got: /'
     fi
 }
 
@@ -43,6 +45,26 @@ assert_lacks() {
         nok "${label}: unexpectedly found '${needle}'"
     else
         ok "${label}"
+    fi
+}
+
+assert_eq() {
+    local label="$1" want="$2" got="$3"
+    TESTS_RUN=$((TESTS_RUN + 1))
+    if [[ "${want}" == "${got}" ]]; then
+        ok "${label}"
+    else
+        nok "${label}: expected '${want}', got '${got}'"
+    fi
+}
+
+assert_rc() {
+    local label="$1" want="$2" got="$3"
+    TESTS_RUN=$((TESTS_RUN + 1))
+    if [[ "${want}" == "${got}" ]]; then
+        ok "${label}"
+    else
+        nok "${label}: expected rc ${want}, got ${got}"
     fi
 }
 
@@ -148,11 +170,54 @@ rpm_pkg_stubs() {
     new_stub "$1" yum 'exit 0'
 }
 
+# The MAC, audit and PAM commands are host-specific, so every case is pointed at
+# the same fixtures: two loadable AppArmor profiles plus the two entries that must
+# be skipped, a permissive SELinux config and four stacks with a pam_unix line.
+mac_fixture() {
+    local dir="${WORK_DIR}/apparmor.d"
+    mkdir -p "${dir}/local" "${WORK_DIR}/pam"
+    printf '/bin/bash {\n}\n' > "${dir}/bash"
+    printf '/bin/ping {\n}\n' > "${dir}/ping"
+    printf '#include <tunables/global>\n' > "${dir}/tunables.global"
+    printf 'SELINUX=permissive\nSELINUXTYPE=targeted\n' > "${WORK_DIR}/selinux"
+    local stack
+    for stack in common-auth common-account system-auth password-auth; do
+        cat > "${WORK_DIR}/pam/${stack}" <<'EOF'
+auth    [success=1 default=ignore]  pam_unix.so nullok
+account required                    pam_unix.so
+EOF
+    done
+}
+
+# aa-status reports an enabled AppArmor and getenforce a permissive SELinux. Both
+# audit loaders exist, so the transcript shows which one the driver prefers. A
+# case that needs a different answer installs its own stub first: these are
+# defaults, not overrides.
+default_stub() {
+    local dir="$1" name="$2" body="$3"
+    if [[ ! -e "${dir}/${name}" ]]; then
+        new_stub "${dir}" "${name}" "${body}"
+    fi
+}
+
+mac_command_stubs() {
+    default_stub "$1" getenforce 'echo Permissive'
+    default_stub "$1" setenforce 'exit 0'
+    default_stub "$1" aa-status 'if [ "$1" = "--enabled" ]; then exit 0; fi
+echo "2 profiles are in enforce mode."
+exit 0'
+    default_stub "$1" aa-enforce 'exit 0'
+    default_stub "$1" apparmor_status 'exit 0'
+    default_stub "$1" augenrules 'exit 0'
+    default_stub "$1" auditctl 'exit 0'
+}
+
 # run_driver <fixture> <stub dir> <init override> [locale to request]
 # Prints what the loaded driver would do, with no changes to the host.
 run_driver() {
     local fixture="$1" stub_dir="$2" init_override="$3" want_locale="${4:-en_US.UTF-8}"
     locale_stub "${stub_dir}"
+    mac_command_stubs "${stub_dir}"
     (
         cd "${PROJECT_DIR}" || exit 1
         export OS_RELEASE_FILE="${fixture}"
@@ -162,6 +227,10 @@ run_driver() {
         export STATE_DIR="${WORK_DIR}/state"
         export LOG_FILE="${WORK_DIR}/transcript.log"
         export SSH_PORT=2222
+        export APPARMOR_PROFILE_DIR="${WORK_DIR}/apparmor.d"
+        export SELINUX_CONFIG="${WORK_DIR}/selinux"
+        export PAM_DIR="${WORK_DIR}/pam"
+        export PAM_FAILLOCK_MODULE_PATH="${WORK_DIR}/pam/pam_faillock.so"
         # shellcheck disable=SC1091
         source lib/common.sh
         if ! detect_os > /dev/null 2>&1; then
@@ -205,8 +274,18 @@ run_driver() {
         drv_unattended_setup
         drv_crypto_policy DEFAULT || printf 'crypto_policy=unsupported\n'
         drv_updates_apply
+        printf 'audit_rules_file=%s\n' "$(drv_audit_rules_file)"
+        printf 'pwquality_pkg=%s\n' "$(drv_pwquality_pkg)"
+        printf 'lockout_files=%s\n' "$(drv_lockout_files | tr '\n' ' ' | tr -s ' ')"
+        drv_lockout_apply 4 300 600 || printf 'lockout_failed\n'
+        printf 'legacy_all=%s\n' "$(drv_legacy_services all | tr '\n' ' ' | tr -s ' ')"
+        drv_audit_apply || printf 'audit_apply_failed\n'
+        printf 'mac_status=%s\n' "$(drv_mac_status)"
+        drv_mac_enforce || printf 'mac_enforce_failed\n'
     ) 2>&1
 }
+
+mac_fixture
 
 echo "== Debian 12 (systemd, ufw active) =="
 STUB="$(new_stub_dir debian)"
@@ -237,6 +316,16 @@ assert_has "backs up both Debian locale files" "${DEB_OUT}" "locale_files=/etc/l
 assert_has "enables unattended-upgrades" "${DEB_OUT}" "apt-get install -y --no-install-recommends unattended-upgrades"
 assert_has "declines a system crypto policy" "${DEB_OUT}" "crypto_policy=unsupported"
 assert_has "upgrades with the debconf-safe options" "${DEB_OUT}" "dist-upgrade -y"
+assert_has "names the Debian audit rules file" "${DEB_OUT}" "audit_rules_file=/etc/audit/rules.d/99-linux-server-bootstrap.rules"
+assert_has "names the Debian password library" "${DEB_OUT}" "pwquality_pkg=libpam-pwquality"
+assert_has "backs up the faillock file" "${DEB_OUT}" "lockout_files=/etc/security/faillock.conf"
+assert_has "backs up the Debian stacks" "${DEB_OUT}" "${WORK_DIR}/pam/common-auth ${WORK_DIR}/pam/common-account"
+assert_has "splices the shared auth stack" "${DEB_OUT}" "-> ${WORK_DIR}/pam/common-auth"
+assert_has "loads the rules with augenrules" "${DEB_OUT}" "[dry-run] augenrules --load"
+assert_has "sets the Debian legacy list" "${DEB_OUT}" "legacy_all=telnet.socket rsh.socket rlogin.socket rexec.socket tftp.socket xinetd nis"
+assert_has "enforces each Debian profile" "${DEB_OUT}" "[dry-run] aa-enforce ${WORK_DIR}/apparmor.d/bash"
+assert_has "reports the enforced profile count" "${DEB_OUT}" "AppArmor: 2 profile(s) set to enforce"
+assert_lacks "skips an include file in the profile directory" "${DEB_OUT}" "aa-enforce ${WORK_DIR}/apparmor.d/tunables.global"
 
 echo
 echo "== Ubuntu 24.04 (ufw present but inactive) =="
@@ -304,6 +393,53 @@ assert_has "uses the EL symlink as the timezone file" "${R9_OUT}" "timezone_file
 assert_has "sets the locale with localectl on systemd" "${R9_OUT}" "localectl set-locale LANG=en_US.UTF-8"
 assert_has "backs up only locale.conf on EL" "${R9_OUT}" "locale_files=/etc/locale.conf"
 assert_lacks "does not write locale.conf when localectl is available" "${R9_OUT}" "-> /etc/locale.conf"
+assert_has "names the EL password library" "${R9_OUT}" "pwquality_pkg=libpwquality"
+assert_has "backs up both EL stacks" "${R9_OUT}" "${WORK_DIR}/pam/system-auth ${WORK_DIR}/pam/password-auth"
+assert_has "splices the EL system stack" "${R9_OUT}" "-> ${WORK_DIR}/pam/system-auth"
+assert_has "splices the EL login stack" "${R9_OUT}" "-> ${WORK_DIR}/pam/password-auth"
+assert_has "reports the SELinux mode read" "${R9_OUT}" "mac_status=Permissive"
+assert_has "switches SELinux live" "${R9_OUT}" "[dry-run] setenforce 1"
+assert_has "rewrites the SELinux configuration file" "${R9_OUT}" "-> ${WORK_DIR}/selinux"
+assert_has "names the EL legacy list" "${R9_OUT}" "legacy_all=telnet.socket rsh.socket rlogin.socket rexec.socket tftp.socket xinetd ypbind"
+
+echo
+echo "== RHEL 9 with an authselect profile that offers faillock =="
+STUB="$(new_stub_dir rhel9authselect)"
+write_fixture "${WORK_DIR}/rhel9as.release" rhel "" 9.4
+new_stub "${STUB}" rpm 'if [ "$1" = "-q" ]; then exit 0; fi
+exit 1'
+firewalld_cli_stub "${STUB}"
+new_stub "${STUB}" update-crypto-policies 'exit 0'
+make_systemd_stubs "${STUB}"
+rpm_pkg_stubs "${STUB}"
+new_stub "${STUB}" authselect 'case "$1" in
+    current) echo "Default profile: tailored-default"; echo "Profile ID: tailored-default"; exit 0 ;;
+    list-features) echo "with-faillock"; echo "with-sudo"; exit 0 ;;
+    esac
+    exit 0'
+R9AS_OUT="$(run_driver "${WORK_DIR}/rhel9as.release" "${STUB}" systemd)"
+assert_has "enables the feature instead of editing the stack" "${R9AS_OUT}" \
+    "[dry-run] authselect select tailored-default with-faillock --force"
+assert_has "names the profile it changed" "${R9AS_OUT}" "through authselect on profile tailored-default"
+assert_lacks "does not splice a stack authselect owns" "${R9AS_OUT}" "-> ${WORK_DIR}/pam/system-auth"
+assert_lacks "does not splice the login stack either" "${R9AS_OUT}" "-> ${WORK_DIR}/pam/password-auth"
+assert_has "still writes the thresholds" "${R9AS_OUT}" "/etc/security/faillock.conf (mode 0644)"
+
+echo
+echo "== CentOS 7 with authconfig (EL7 has no authselect) =="
+STUB="$(new_stub_dir centos7authconfig)"
+write_fixture "${WORK_DIR}/centos7ac.release" centos rhel 7
+new_stub "${STUB}" rpm 'if [ "$1" = "-q" ]; then exit 1; fi
+exit 1'
+firewalld_cli_stub "${STUB}"
+make_systemd_stubs "${STUB}"
+rpm_pkg_stubs "${STUB}"
+new_stub "${STUB}" authconfig 'exit 0'
+C7AC_OUT="$(run_driver "${WORK_DIR}/centos7ac.release" "${STUB}" systemd)"
+assert_has "enables faillock through authconfig" "${C7AC_OUT}" "[dry-run] authconfig --enablefaillock"
+assert_has "passes the requested thresholds" "${C7AC_OUT}" "--faillockargs=deny=4 unlock_time=600"
+assert_has "updates the stacks in one step" "${C7AC_OUT}" "--update"
+assert_lacks "does not splice stacks authconfig manages" "${C7AC_OUT}" "-> ${WORK_DIR}/pam/system-auth"
 
 echo
 echo "== CentOS 7 without systemd (EL7 SysV image) =="
@@ -376,6 +512,9 @@ echo "== openSUSE Leap (zypper, firewalld, AppArmor, no crypto command) =="
 STUB="$(new_stub_dir suse)"
 write_fixture "${WORK_DIR}/suse.release" opensuse-leap suse 15.6
 new_stub "${STUB}" zypper 'exit 0'
+# openSUSE ships the SELinux tools at most with the policy disabled, which is what
+# puts the host on AppArmor rather than SELinux.
+new_stub "${STUB}" getenforce 'echo Disabled'
 firewalld_cli_stub "${STUB}"
 make_systemd_stubs "${STUB}"
 SUSE_OUT="$(run_driver "${WORK_DIR}/suse.release" "${STUB}" systemd)"
@@ -393,6 +532,10 @@ assert_has "writes TIMEZONE into /etc/sysconfig/clock" "${SUSE_OUT}" "-> /etc/sy
 assert_has "sets the locale with localectl" "${SUSE_OUT}" "localectl set-locale LANG=en_US.UTF-8"
 assert_has "writes RC_LANG into the SUSE language file" "${SUSE_OUT}" "-> /etc/sysconfig/language (mode 0644)"
 assert_has "backs up both SUSE locale locations" "${SUSE_OUT}" "locale_files=/etc/locale.conf /etc/sysconfig/language"
+assert_has "names the SUSE password library" "${SUSE_OUT}" "pwquality_pkg=pam"
+assert_has "splices the SUSE shared stack" "${SUSE_OUT}" "-> ${WORK_DIR}/pam/common-auth"
+assert_has "enforces the SUSE profiles" "${SUSE_OUT}" "[dry-run] aa-enforce ${WORK_DIR}/apparmor.d/ping"
+assert_has "shares the firewalld rich rule action" "${SUSE_OUT}" "f2b_action=firewallcmd-rich-rules"
 
 echo
 echo "== RHEL without a firewall command line (--skip-firewall) =="
@@ -405,6 +548,57 @@ NOFW_OUT="$(run_driver "${WORK_DIR}/rhel-nofw.release" "${STUB}" systemd)"
 assert_lacks "does not name the firewalld action" "${NOFW_OUT}" "f2b_action=firewallcmd-rich-rules"
 assert_lacks "does not name the ufw action" "${NOFW_OUT}" "f2b_action=ufw"
 assert_has "still installs fail2ban with its default action" "${NOFW_OUT}" "install -y fail2ban"
+
+echo
+echo "== the SELinux persist edit rewrites only the SELINUX key =="
+STUB="$(new_stub_dir selinuxpersist)"
+mac_command_stubs "${STUB}"
+SELINUX_OUT="$(
+    cd "${PROJECT_DIR}" || exit 1
+    export PATH="${STUB}:${PATH}"
+    export DRY_RUN=1
+    export LOG_FILE="${WORK_DIR}/selinux.log"
+    export SELINUX_CONFIG="${WORK_DIR}/selinux"
+    # shellcheck disable=SC1091
+    source lib/common.sh
+    # shellcheck disable=SC1091
+    source lib/drivers/_mac.sh
+    install_file() {
+        printf -- '----- written file\n'
+        cat -- "$2"
+    }
+    mac_enforce_selinux 2>&1
+)"
+assert_has "the live switch is printed" "${SELINUX_OUT}" "[dry-run] setenforce 1"
+assert_has "the persisted key is enforcing" "${SELINUX_OUT}" "SELINUX=enforcing"
+assert_has "the policy type survives the rewrite" "${SELINUX_OUT}" "SELINUXTYPE=targeted"
+assert_eq "exactly one SELINUX key is written" "1" "$(grep -c '^SELINUX=' <<< "${SELINUX_OUT}")"
+
+echo
+echo "== a disabled SELinux is refused rather than half-enabled =="
+STUB="$(new_stub_dir selinuxdisabled)"
+mac_command_stubs "${STUB}"
+new_stub "${STUB}" getenforce 'echo Disabled'
+DISABLED_OUT="$(
+    cd "${PROJECT_DIR}" || exit 1
+    export PATH="${STUB}:${PATH}"
+    export DRY_RUN=1
+    export LOG_FILE="${WORK_DIR}/selinux.log"
+    export SELINUX_CONFIG="${WORK_DIR}/selinux"
+    # shellcheck disable=SC1091
+    source lib/common.sh
+    # shellcheck disable=SC1091
+    source lib/drivers/_mac.sh
+    install_file() {
+        printf -- '----- written file\n'
+        cat -- "$2"
+    }
+    mac_enforce_selinux 2>&1
+)"
+assert_rc "the refusal is a failure" 1 "$?"
+assert_has "the relabel is explained" "${DISABLED_OUT}" "needs a full relabel and a reboot"
+assert_has "the operator is told how to do it deliberately" "${DISABLED_OUT}" "/.autorelabel"
+assert_lacks "no silent live switch was attempted" "${DISABLED_OUT}" "setenforce 1"
 
 echo
 echo "Ran ${TESTS_RUN} checks, ${TESTS_FAILED} failed."

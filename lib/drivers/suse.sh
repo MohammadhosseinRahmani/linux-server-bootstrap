@@ -6,6 +6,10 @@
 
 # shellcheck source=_firewalld.sh
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/_firewalld.sh"
+# shellcheck source=_mac.sh
+source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/_mac.sh"
+# shellcheck source=_pam.sh
+source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/_pam.sh"
 
 SSH_SOCKET_DROPIN=""
 
@@ -90,6 +94,14 @@ drv_mac_name() {
     fi
 }
 
+drv_mac_enforce() {
+    if [[ "$(drv_mac_name)" == "selinux" ]]; then
+        mac_enforce_selinux
+    else
+        mac_enforce_apparmor
+    fi
+}
+
 drv_mac_install() {
     if [[ "$(drv_mac_name)" == "selinux" ]]; then
         drv_pkg_install libselinux-utils policycoreutils
@@ -155,4 +167,31 @@ drv_crypto_policy() {
     else
         run_cmd crypto-policies-config --level "${profile}"
     fi
+}
+
+# SUSE regenerates common-auth and common-account from its own configuration when
+# pam-configd runs, so the splice is the only step available here and the stage
+# warns about it.
+drv_lockout_files() {
+    printf '%s\n' /etc/security/faillock.conf "${PAM_DIR}/common-auth" "${PAM_DIR}/common-account"
+}
+
+drv_lockout_apply() {
+    local deny="${1:-3}" fail_interval="${2:-900}" unlock_time="${3:-900}"
+
+    if ! pam_faillock_module_path >/dev/null 2>&1; then
+        error "pam_faillock.so is not installed. Install the pam module package (zypper install pam)."
+        return 1
+    fi
+
+    faillock_conf_write "${deny}" "${fail_interval}" "${unlock_time}" || return 1
+    if command -v pam-configd >/dev/null 2>&1; then
+        warn "pam-configd can rewrite these stacks; keep the faillock lines in /etc/pam.d/standard."
+    fi
+    pam_splice_faillock "${PAM_DIR}/common-auth" "${PAM_DIR}/common-account"
+}
+
+drv_pwquality_pkg() {
+    # openSUSE and SLE ship pam_pwquality.so inside the pam package.
+    printf 'pam\n'
 }

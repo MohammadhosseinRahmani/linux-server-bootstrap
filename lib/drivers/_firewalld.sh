@@ -220,3 +220,34 @@ drv_f2b_action() {
         printf '\n'
     fi
 }
+
+drv_audit_rules_file() {
+    printf '/etc/audit/rules.d/99-linux-server-bootstrap.rules\n'
+}
+
+# augenrules rebuilds the single rules file from every fragment in rules.d, which
+# is the layout all three RPM families use. auditctl -R is the fallback for a
+# host where the audit package ships the binary but not the helper.
+drv_audit_apply() {
+    if command -v augenrules >/dev/null 2>&1; then
+        run_cmd augenrules --load
+        return 0
+    fi
+    if command -v auditctl >/dev/null 2>&1; then
+        run_cmd auditctl -R "$(drv_audit_rules_file)"
+        return 0
+    fi
+    error "Neither augenrules nor auditctl is installed, so the rules cannot be loaded."
+    return 1
+}
+
+# Cleartext remote shells and legacy name services are the default list. Printer,
+# scanner and file-share daemons are only listed when the caller asks for them,
+# because disabling one of those is a feature removal, not a hardening step.
+drv_legacy_services() {
+    local scope="${1:-cleartext}"
+    printf '%s\n' telnet.socket rsh.socket rlogin.socket rexec.socket tftp.socket xinetd ypbind
+    if [[ "${scope}" == "all" ]]; then
+        printf '%s\n' avahi-daemon cups nfs-server rpcbind
+    fi
+}
