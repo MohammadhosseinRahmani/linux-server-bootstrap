@@ -34,7 +34,7 @@ DRIVER_CONTRACT=(
     drv_fw_backend drv_fw_install drv_fw_backup_paths drv_fw_snapshot
     drv_fw_record_state drv_fw_restore_runtime drv_fw_apply_port
     drv_fw_deny_others drv_fw_enable drv_fw_is_active drv_fw_port_is_open
-    drv_fw_status_text
+    drv_fw_status_text drv_fw_close
     drv_ssh_unit drv_ssh_socket_setup
     drv_f2b_action drv_f2b_prepare_repo
     drv_mac_name drv_mac_install drv_mac_status drv_mac_enforce

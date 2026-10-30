@@ -423,6 +423,63 @@ confirm() {
     fi
 }
 
+# One bootstrap run at a time. Two passes editing sshd_config or the firewall
+# together can leave the host unreachable, and neither one stops the other. mkdir
+# is atomic on every filesystem, so it is used instead of a lock command that a
+# minimal image may not ship. The orchestrator is the only caller, because a
+# stage run on purpose by itself is a deliberate, single edit.
+RUN_LOCK_DIR="${RUN_LOCK_DIR:-${STATE_DIR}/run.lock}"
+
+take_run_lock() {
+    if dry_run; then
+        echo "  [dry-run] mkdir ${RUN_LOCK_DIR}"
+        _log DRYRUN "lock ${RUN_LOCK_DIR}"
+        return 0
+    fi
+    if mkdir -- "${RUN_LOCK_DIR}" 2>/dev/null; then
+        printf '%s\n' "$$" > "${RUN_LOCK_DIR}/pid"
+        trap 'release_run_lock' EXIT
+        return 0
+    fi
+
+    local owner
+    owner="$(cat -- "${RUN_LOCK_DIR}/pid" 2>/dev/null || true)"
+    if [[ -n "${owner}" ]] && kill -0 "${owner}" 2>/dev/null; then
+        error "Another run is in progress: pid ${owner} holds ${RUN_LOCK_DIR}."
+        error "Wait for it, or remove ${RUN_LOCK_DIR} if that process is gone."
+        return 1
+    fi
+    warn "Removing the lock left behind by pid ${owner:-unknown}."
+    rm -rf -- "${RUN_LOCK_DIR}"
+    if mkdir -- "${RUN_LOCK_DIR}" 2>/dev/null; then
+        printf '%s\n' "$$" > "${RUN_LOCK_DIR}/pid"
+        trap 'release_run_lock' EXIT
+        return 0
+    fi
+    error "Could not create the run lock at ${RUN_LOCK_DIR}."
+    return 1
+}
+
+release_run_lock() {
+    if dry_run; then
+        return 0
+    fi
+    # Only the process that took the lock may remove it.
+    if [[ -f "${RUN_LOCK_DIR}/pid" ]] \
+        && [[ "$(cat -- "${RUN_LOCK_DIR}/pid" 2>/dev/null)" == "$$" ]]; then
+        rm -rf -- "${RUN_LOCK_DIR}"
+    fi
+}
+
+# The report is read by other tools, so a value with a quote or a backslash in it
+# has to arrive as data rather than as broken JSON.
+json_escape() {
+    local text="$1"
+    text="${text//\\/\\\\}"
+    text="${text//\"/\\\"}"
+    printf '%s' "${text}"
+}
+
 current_ssh_server_port() {
     if [[ -n "${SSH_CONNECTION:-}" ]]; then
         awk '{ print $4 }' <<< "${SSH_CONNECTION}"

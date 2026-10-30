@@ -47,13 +47,33 @@ apply_firewall() {
     backend="$(drv_fw_backend)"
     info "Firewall backend is ${backend}."
 
+    # A live session on another port must not be cut off, so that port stays open
+    # and the operator closes it with a second run after reconnecting.
+    local extra
+    extra="$(extra_session_port)"
+
+    # A re-run on a new port has to close the port the previous run opened,
+    # otherwise every port this project ever used stays reachable.
+    local previous
+    previous="$(state_value SSH_MANAGED_PORT)"
+    local close_previous=""
+    if [[ -n "${previous}" && "${previous}" != "${SSH_PORT}" && "${previous}" != "${extra}" ]]; then
+        close_previous="${previous}"
+    fi
+
     cat <<EOF
 Firewall hardening will:
   - allow TCP ${SSH_PORT} through ${backend}
   - deny other inbound connections
   - keep outbound connections allowed
-  - back up the current firewall under ${BACKUP_ROOT}/firewall
 EOF
+    if [[ -n "${extra}" ]]; then
+        printf "  - keep this session's port %s open\n" "${extra}"
+    fi
+    if [[ -n "${close_previous}" ]]; then
+        printf '  - close port %s, which an earlier run opened\n' "${close_previous}"
+    fi
+    printf '  - back up the current firewall under %s/firewall\n' "${BACKUP_ROOT}"
     confirm "Apply firewall hardening?" || return 1
 
     backup_begin firewall
@@ -71,19 +91,19 @@ EOF
     drv_fw_record_state
     save_snapshot firewall-status-before.txt drv_fw_status_text
 
-    # A live session on another port must not be cut off, so that port stays open
-    # and the operator closes it with a second run after reconnecting.
-    local extra
-    extra="$(extra_session_port)"
     if [[ -n "${extra}" ]]; then
         warn "This session uses port ${extra}, so that port stays open."
         warn "Reconnect on port ${SSH_PORT}, then run the firewall script again to close port ${extra}."
     fi
 
     drv_fw_apply_port "${SSH_PORT}" "${extra}"
+    if [[ -n "${close_previous}" ]]; then
+        drv_fw_close "${close_previous}"
+    fi
     drv_fw_deny_others
     drv_fw_enable
 
+    state_set SSH_MANAGED_PORT "${SSH_PORT}"
     save_state
     disarm_rollback
     success "Firewall hardening completed with ${backend}."

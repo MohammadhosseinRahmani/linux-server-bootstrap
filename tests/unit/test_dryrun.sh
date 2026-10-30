@@ -142,28 +142,214 @@ echo "== bootstrap orchestration dry-run =="
 # reaches every child command line instead of depending on the host. The account
 # check is stubbed too, because a throwaway user cannot be assumed to exist.
 BOOT_DIR="${WORK_DIR}/orchestrator"
-mkdir -p "${BOOT_DIR}/hardening" "${BOOT_DIR}/tests"
+mkdir -p "${BOOT_DIR}/hardening" "${BOOT_DIR}/setup" "${BOOT_DIR}/tests"
 cp -a "${PROJECT_DIR}/lib" "${BOOT_DIR}/lib"
 cp "${PROJECT_DIR}/bootstrap.sh" "${BOOT_DIR}/bootstrap.sh"
 printf '\nrequire_allow_users() { return 0; }\n' >> "${BOOT_DIR}/lib/common.sh"
-for stage in ssh firewall fail2ban; do
-    printf '#!/usr/bin/env bash\necho "STAGE %s $*"\n' "${stage}" > "${BOOT_DIR}/hardening/${stage}.sh"
-done
 printf '#!/usr/bin/env bash\necho "STAGE verify $*"\n' > "${BOOT_DIR}/tests/verify.sh"
+# One stub per registered stage, so a full pass reaches every entry in
+# STAGE_ORDER and the counts below are the registry's, not the host's.
+for stage in ssh firewall fail2ban sysctl limits perms audit mac services banner auth_policy; do
+    printf '#!/usr/bin/env bash\necho "STAGE %s $*"\n' "${stage}" \
+        > "${BOOT_DIR}/hardening/${stage}.sh"
+done
+for stage in base users; do
+    printf '#!/usr/bin/env bash\necho "STAGE %s $*"\n' "${stage}" \
+        > "${BOOT_DIR}/setup/${stage}.sh"
+done
 
 BOOT_OUT="$(cd "${BOOT_DIR}" && bash bootstrap.sh --user testadmin --port 2222 --yes --dry-run 2>&1)"
 assert_lacks "the orchestrator knows the flag" "${BOOT_OUT}" "Unknown argument: --dry-run"
 STAGE_LINES="$(printf '%s\n' "${BOOT_OUT}" | grep -F 'STAGE ' || true)"
 STAGE_COUNT="$(printf '%s\n' "${STAGE_LINES}" | grep -cF STAGE || true)"
 DRY_COUNT="$(printf '%s\n' "${STAGE_LINES}" | grep -cF -- --dry-run || true)"
+# Thirteen stages are registered; the two setup stages need an option nobody gave,
+# so a full pass runs eleven.
 TESTS_RUN=$((TESTS_RUN + 1))
-if [[ "${STAGE_COUNT}" -eq 3 && "${DRY_COUNT}" -eq 3 ]]; then
-    ok "every stage was invoked with --dry-run"
+if [[ "${STAGE_COUNT}" -eq 11 && "${DRY_COUNT}" -eq 11 ]]; then
+    ok "all eleven stages a full pass owns were invoked with --dry-run"
 else
-    nok "a stage was invoked without --dry-run (stages=${STAGE_COUNT}, dry=${DRY_COUNT})"
-    printf '%s\n' "${BOOT_OUT}" | tail -20 | sed 's/^/        out: /'
+    nok "expected 11 stages, each with --dry-run (stages=${STAGE_COUNT}, dry=${DRY_COUNT})"
+    printf '%s\n' "${BOOT_OUT}" | tail -25 | sed 's/^/        out: /'
 fi
+assert_has "base setup is left out when nothing asked for it" "${BOOT_OUT}" "Not asked for by any option, so left out: base setup, user preparation"
+assert_has "the port reaches the firewall stub" "${STAGE_LINES}" "STAGE firewall --yes --dry-run --port 2222"
+assert_has "the account reaches the ssh stub" "${STAGE_LINES}" "STAGE ssh --yes --dry-run --user testadmin --port 2222"
 assert_lacks "the verifier was not run for a plan-only pass" "${BOOT_OUT}" "STAGE verify"
+
+echo
+echo "== --only and --skip narrow the plan =="
+ONLY_OUT="$(cd "${BOOT_DIR}" && bash bootstrap.sh --only base,users --hostname srv1 --new-user bob --sudo --yes --dry-run 2>&1)"
+ONLY_LINES="$(printf '%s\n' "${ONLY_OUT}" | grep -F 'STAGE ' || true)"
+TESTS_RUN=$((TESTS_RUN + 1))
+if [[ "$(printf '%s\n' "${ONLY_LINES}" | grep -cF STAGE)" -eq 2 ]]; then
+    ok "--only ran exactly the two named stages"
+else
+    nok "--only ran the wrong set"
+    printf '%s\n' "${ONLY_OUT}" | tail -25 | sed 's/^/        out: /'
+fi
+assert_has "--only still passes --dry-run down" "${ONLY_LINES}" "STAGE base --yes --dry-run --hostname srv1"
+assert_has "the new account is handed to the users stage" "${ONLY_LINES}" "STAGE users --yes --dry-run --user bob --sudo"
+
+SKIP_OUT="$(cd "${BOOT_DIR}" && bash bootstrap.sh --user testadmin --skip firewall --skip-fail2ban --yes --dry-run 2>&1)"
+SKIP_LINES="$(printf '%s\n' "${SKIP_OUT}" | grep -F 'STAGE ' || true)"
+TESTS_RUN=$((TESTS_RUN + 1))
+if [[ "$(printf '%s\n' "${SKIP_LINES}" | grep -cF STAGE)" -eq 9 ]] \
+    && ! grep -qF 'STAGE firewall' <<< "${SKIP_LINES}" \
+    && ! grep -qF 'STAGE fail2ban' <<< "${SKIP_LINES}"; then
+    ok "--skip left both named stages out of the pass"
+else
+    nok "--skip produced the wrong plan"
+    printf '%s\n' "${SKIP_OUT}" | tail -25 | sed 's/^/        out: /'
+fi
+
+TESTS_RUN=$((TESTS_RUN + 1))
+if grep -qF 'Unknown stage: firewal' <<< "$(cd "${BOOT_DIR}" && bash bootstrap.sh --only firewal --yes 2>&1)"; then
+    ok "a misspelled stage name is refused"
+else
+    nok "a misspelled stage name should be refused"
+fi
+
+TESTS_RUN=$((TESTS_RUN + 1))
+if grep -qF 'needs at least one stage name' <<< "$(cd "${BOOT_DIR}" && bash bootstrap.sh --skip '' --yes 2>&1)"; then
+    ok "an empty stage list is refused instead of running everything"
+else
+    nok "an empty stage list should be refused"
+fi
+
+# The plan the operator confirms has to be the plan that runs, so a stage that
+# will be left alone must not appear in it.
+assert_lacks "the confirmed plan omits the stage that will not run" "${BOOT_OUT}" "user preparation (setup/users.sh)"
+EMPTY_PLAN_OUT="$(cd "${BOOT_DIR}" && bash bootstrap.sh --only base,users --yes --dry-run 2>&1)"
+TESTS_RUN=$((TESTS_RUN + 1))
+if [[ "${EMPTY_PLAN_OUT}" == *"Nothing in the plan was asked for"* ]]; then
+    ok "--only with no matching option says so instead of confirming an empty plan"
+else
+    nok "expected an empty-plan refusal, got: ${EMPTY_PLAN_OUT}"
+fi
+
+echo
+echo "== --status and --report read without touching the host =="
+# A dedicated backup root keeps the counts below deterministic: the earlier
+# dry-runs in this file already left firewall and fail2ban backups behind.
+STATUS_BACKUP="${WORK_DIR}/status-backups"
+STATUS_STATE="${WORK_DIR}/status-state"
+mkdir -p "${STATUS_BACKUP}/firewall/20260101-000000" "${STATUS_STATE}"
+ln -sfn "${STATUS_BACKUP}/firewall/20260101-000000" "${STATUS_BACKUP}/firewall/latest"
+printf 'SSH_PORT=2222\nSSH_ALLOW_USERS_LINE=testadmin\n' > "${STATUS_STATE}/state.env"
+
+STATUS_OUT="$(cd "${BOOT_DIR}" && BACKUP_ROOT="${STATUS_BACKUP}" STATE_DIR="${STATUS_STATE}" bash bootstrap.sh --status 2>&1)"
+assert_has "status names the ssh port from the state file" "${STATUS_OUT}" "ssh port: 2222"
+assert_has "status names the allowed user" "${STATUS_OUT}" "allowed users: testadmin"
+assert_has "status shows the backup a stage really left behind" "${STATUS_OUT}" "20260101-000000"
+assert_has "status marks a stage with no backup as not applied" "${STATUS_OUT}" "not applied"
+TESTS_RUN=$((TESTS_RUN + 1))
+if [[ "$(grep -cF 'not applied' <<< "${STATUS_OUT}")" -eq 12 ]]; then
+    ok "every stage appears exactly once in the table"
+else
+    nok "expected 12 'not applied' rows, got: ${STATUS_OUT}"
+fi
+assert_absent_file "a read-only status run takes no lock" "${STATUS_STATE}/run.lock"
+
+REPORT_JSON="${WORK_DIR}/report.json"
+REPORT_ERR="${WORK_DIR}/report.err"
+(cd "${BOOT_DIR}" && BACKUP_ROOT="${STATUS_BACKUP}" STATE_DIR="${STATUS_STATE}" bash bootstrap.sh --report > "${REPORT_JSON}" 2> "${REPORT_ERR}")
+REPORT_OUT="$(cat "${REPORT_JSON}")"
+assert_has "report carries the backup root" "${REPORT_OUT}" "\"backup_root\": \"${STATUS_BACKUP}\""
+assert_has "report marks the firewall stage applied" "${REPORT_OUT}" "\"name\": \"firewall\", \"title\": \"firewall\", \"applied\": true"
+TESTS_RUN=$((TESTS_RUN + 1))
+if [[ "$(grep -cF '"applied": false' <<< "${REPORT_OUT}")" -eq 12 ]]; then
+    ok "report lists all thirteen stages"
+else
+    nok "expected 12 unapplied stages, got: ${REPORT_OUT}"
+fi
+TESTS_RUN=$((TESTS_RUN + 1))
+if grep -qF 'Detected ' "${REPORT_ERR}" && ! grep -qF 'Detected ' "${REPORT_OUT}"; then
+    ok "the progress chatter went to stderr, not into the document"
+else
+    nok "a report must keep stdout machine-readable"
+fi
+TESTS_RUN=$((TESTS_RUN + 1))
+if command -v python3 >/dev/null 2>&1; then
+    if printf '%s\n' "${REPORT_OUT}" | python3 -c 'import json,sys; json.load(sys.stdin)' 2>/dev/null; then
+        ok "the report parses as JSON"
+    else
+        nok "the report is not valid JSON"
+        printf '%s\n' "${REPORT_OUT}" | sed 's/^/        out: /'
+    fi
+else
+    ok "the report ends cleanly (no JSON parser on this host to check it)"
+fi
+TESTS_RUN=$((TESTS_RUN + 1))
+LAST_OBJECT="$(printf '%s\n' "${REPORT_OUT}" | grep -F '"name":' | tail -1)"
+if [[ -n "${LAST_OBJECT}" && "${LAST_OBJECT}" != *, ]]; then
+    ok "the last stage object is not followed by a comma"
+else
+    nok "the last stage object must have no trailing comma, got: ${LAST_OBJECT}"
+fi
+
+echo
+echo "== the run lock keeps two writers apart =="
+# mkdir is the lock, so a live holder has to make a second run refuse, and a
+# holder that died has to leave a lock the next run can reclaim.
+LOCK_STATE="${WORK_DIR}/lockstate"
+mkdir -p "${LOCK_STATE}/run.lock"
+# The holder is a real live process, because the lock is only honoured when the
+# pid recorded in it still exists.
+sleep 30 &
+HOLDER_PID=$!
+printf '%s\n' "${HOLDER_PID}" > "${LOCK_STATE}/run.lock/pid"
+LOCK_OUT="$(cd "${PROJECT_DIR}" && bash -c "
+    # shellcheck disable=SC1091
+    source lib/common.sh
+    DRY_RUN=0
+    RUN_LOCK_DIR='${LOCK_STATE}/run.lock'
+    take_run_lock
+" 2>&1)"
+LOCK_RC=$?
+TESTS_RUN=$((TESTS_RUN + 1))
+if [[ "${LOCK_RC}" -ne 0 ]] && grep -qF 'Another run is in progress' <<< "${LOCK_OUT}"; then
+    ok "a second run is refused while the holder lives"
+else
+    nok "the lock should refuse a concurrent run (rc=${LOCK_RC})"
+    printf '%s\n' "${LOCK_OUT}" | sed 's/^/        out: /'
+fi
+kill "${HOLDER_PID}" 2>/dev/null || true
+wait "${HOLDER_PID}" 2>/dev/null || true
+TESTS_RUN=$((TESTS_RUN + 1))
+if [[ -d "${LOCK_STATE}/run.lock" ]]; then
+    ok "a refused run leaves the holder's lock in place"
+else
+    nok "the refused run deleted the lock it did not own"
+fi
+
+STALE_OUT="$(cd "${PROJECT_DIR}" && bash -c "
+    # shellcheck disable=SC1091
+    source lib/common.sh
+    DRY_RUN=0
+    RUN_LOCK_DIR='${LOCK_STATE}/stale.lock'
+    mkdir -p \"\${RUN_LOCK_DIR}\"
+    printf '${HOLDER_PID}\n' > \"\${RUN_LOCK_DIR}/pid\"
+    take_run_lock && printf 'TOOK_THE_LOCK\n'
+" 2>&1)"
+assert_has "a lock left by a dead run is reclaimed" "${STALE_OUT}" "Removing the lock left behind"
+assert_has "the reclaiming run holds the lock" "${STALE_OUT}" "TOOK_THE_LOCK"
+
+echo
+echo "== a re-run closes the port the earlier run opened =="
+# Moving the port twice would otherwise leave the old one filtered-open forever.
+PREV_STATE_DIR="${WORK_DIR}/prevstate"
+PREV_BACKUP_DIR="${WORK_DIR}/prevbackups"
+mkdir -p "${PREV_STATE_DIR}" "${PREV_BACKUP_DIR}"
+printf 'SSH_PORT=9022\nSSH_MANAGED_PORT=9022\nSSH_ALLOW_USERS_LINE=testadmin\n' > "${PREV_STATE_DIR}/state.env"
+CLOSE_OUT="$(cd "${PROJECT_DIR}" && STATE_DIR="${PREV_STATE_DIR}" BACKUP_ROOT="${PREV_BACKUP_DIR}" bash hardening/firewall.sh --port 2222 --yes 2>&1)"
+assert_has "the plan closes the port the earlier run opened" "${CLOSE_OUT}" "close port 9022, which an earlier run opened"
+assert_has "the managed port is recorded for the next run" "${CLOSE_OUT}" "save state 2222"
+# The session-port guard wins over the close: killing the operator's own
+# connection is worse than leaving one stale rule behind.
+LIVE_OUT="$(cd "${PROJECT_DIR}" && STATE_DIR="${PREV_STATE_DIR}" BACKUP_ROOT="${PREV_BACKUP_DIR}" SSH_CONNECTION="10.0.0.1 5555 10.0.0.2 9022" bash hardening/firewall.sh --port 2222 --yes 2>&1)"
+assert_has "the live session port is kept open" "${LIVE_OUT}" "This session uses port 9022"
+assert_lacks "the live session port is not closed" "${LIVE_OUT}" "close port 9022, which an earlier run opened"
 
 echo
 echo "== rollback is a no-op in dry-run =="
