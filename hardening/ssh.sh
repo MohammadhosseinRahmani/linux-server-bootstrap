@@ -6,7 +6,8 @@
 # method is chosen by probing sshd itself, because a policy that silently does
 # not load is worse than no policy.
 
-set -euo pipefail
+# -E keeps the rollback ERR trap alive inside function calls.
+set -Eeuo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=../lib/common.sh

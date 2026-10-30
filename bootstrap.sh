@@ -3,7 +3,9 @@
 # A failed step stops the run. Earlier steps are left in place and can be
 # rolled back on their own, or all together with --rollback.
 
-set -euo pipefail
+# -E is required: the rollback ERR trap has to fire inside function calls, and
+# every stage does its work inside functions.
+set -Eeuo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib/common.sh

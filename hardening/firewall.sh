@@ -5,7 +5,8 @@
 # Everything distribution-specific lives in lib/drivers/. This stage calls the
 # drv_fw_* contract only, so adding a family does not touch this file.
 
-set -euo pipefail
+# -E keeps the rollback ERR trap alive inside function calls.
+set -Eeuo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=../lib/common.sh

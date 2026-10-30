@@ -4,7 +4,8 @@
 # The ban action and any extra repository come from the loaded driver; the log
 # backend follows the init system. Adding a distribution does not touch this file.
 
-set -euo pipefail
+# -E keeps the rollback ERR trap alive inside function calls.
+set -Eeuo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=../lib/common.sh

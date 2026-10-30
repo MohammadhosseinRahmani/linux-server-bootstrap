@@ -249,6 +249,61 @@ load_saved_users_if_empty() {
     fi
 }
 
+# Stages share one state file, so each stage records its own keys here and
+# save_state rewrites the file without dropping what another stage wrote.
+STATE_OVERRIDES=()
+
+state_set() {
+    local key="$1" value="$2" item found=0
+    local -a rebuilt=()
+    if [[ "${#STATE_OVERRIDES[@]}" -gt 0 ]]; then
+        for item in "${STATE_OVERRIDES[@]}"; do
+            if [[ "${item}" == "${key}="* ]]; then
+                rebuilt+=("${key}=${value}")
+                found=1
+            else
+                rebuilt+=("${item}")
+            fi
+        done
+    fi
+    if [[ "${found}" -eq 0 ]]; then
+        rebuilt+=("${key}=${value}")
+    fi
+    STATE_OVERRIDES=("${rebuilt[@]}")
+}
+
+state_key_is_recorded() {
+    local key="$1" item
+    case "${key}" in
+        SSH_PORT|SSH_ALLOW_USERS_LINE|OS_FAMILY|OS_ID|SSH_DROPIN_STYLE) return 0 ;;
+    esac
+    # The length test keeps this readable on EL7, where bash 4.2 treats an empty
+    # array as unbound under set -u.
+    if [[ "${#STATE_OVERRIDES[@]}" -eq 0 ]]; then
+        return 1
+    fi
+    for item in "${STATE_OVERRIDES[@]}"; do
+        if [[ "${item}" == "${key}="* ]]; then
+            return 0
+        fi
+    done
+    return 1
+}
+
+# Copies the keys this stage does not own to the new state file being built.
+preserve_other_state_keys() {
+    local dest="$1" line key
+    [[ -f "${STATE_FILE}" ]] || return 0
+    while IFS= read -r line; do
+        [[ "${line}" == *"="* ]] || continue
+        key="${line%%=*}"
+        if state_key_is_recorded "${key}"; then
+            continue
+        fi
+        printf '%s\n' "${line}" >> "${dest}"
+    done < "${STATE_FILE}"
+}
+
 save_state() {
     if dry_run; then
         echo "  [dry-run] save state ${SSH_PORT} ${SSH_ALLOW_USERS[*]} -> ${STATE_FILE}"
@@ -262,12 +317,19 @@ save_state() {
     local tmp
     tmp="$(mktemp)"
     {
+        preserve_other_state_keys "${tmp}"
         printf 'SSH_PORT=%s\n' "${SSH_PORT}"
         printf 'SSH_ALLOW_USERS_LINE=%s\n' "${SSH_ALLOW_USERS[*]}"
         printf 'OS_FAMILY=%s\n' "${OS_FAMILY}"
         printf 'OS_ID=%s\n' "${OS_ID}"
         if [[ -n "${SSH_DROPIN_STYLE:-}" ]]; then
             printf 'SSH_DROPIN_STYLE=%s\n' "${SSH_DROPIN_STYLE}"
+        fi
+        local item
+        if [[ "${#STATE_OVERRIDES[@]}" -gt 0 ]]; then
+            for item in "${STATE_OVERRIDES[@]}"; do
+                printf '%s\n' "${item}"
+            done
         fi
     } > "${tmp}"
     install -m 0644 -o root -g root "${tmp}" "${STATE_FILE}"
