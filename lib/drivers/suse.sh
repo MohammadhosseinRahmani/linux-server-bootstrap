@@ -39,6 +39,49 @@ drv_f2b_prepare_repo() {
     return 0
 }
 
+drv_timezone_apply() {
+    local zone="$1"
+    if [[ ! -f "/usr/share/zoneinfo/${zone}" ]]; then
+        error "Unknown timezone: ${zone}"
+        return 1
+    fi
+    if [[ "${INIT_SYSTEM}" == "systemd" ]] && command -v timedatectl >/dev/null 2>&1; then
+        run_cmd timedatectl set-timezone "${zone}"
+    else
+        run_cmd ln -sf "/usr/share/zoneinfo/${zone}" /etc/localtime
+    fi
+    # SUSE keeps its own copy of the zone, and the boot scripts read it.
+    local tmp
+    tmp="$(mktemp)"
+    printf 'TIMEZONE="%s"\n' "${zone}" > "${tmp}"
+    install_file 0644 "${tmp}" /etc/sysconfig/clock
+    rm -f -- "${tmp}"
+}
+
+drv_locale_apply() {
+    local locale="$1"
+    if ! locale -a 2>/dev/null | grep -Fxq "${locale}"; then
+        error "${locale} is not available. Generate it with localedef."
+        return 1
+    fi
+    if [[ "${INIT_SYSTEM}" == "systemd" ]] && command -v localectl >/dev/null 2>&1; then
+        run_cmd localectl set-locale "LANG=${locale}"
+    fi
+    local tmp
+    tmp="$(mktemp)"
+    printf 'RC_LANG="%s"\n' "${locale}" > "${tmp}"
+    install_file 0644 "${tmp}" /etc/sysconfig/language
+    rm -f -- "${tmp}"
+}
+
+drv_timezone_file() {
+    printf '/etc/sysconfig/clock\n'
+}
+
+drv_locale_files() {
+    printf '/etc/locale.conf\n/etc/sysconfig/language\n'
+}
+
 drv_mac_name() {
     if command -v getenforce >/dev/null 2>&1 && [[ "$(getenforce 2>/dev/null)" != "Disabled" ]]; then
         printf 'selinux\n'

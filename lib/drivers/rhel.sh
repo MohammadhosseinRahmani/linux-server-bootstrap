@@ -86,6 +86,44 @@ drv_mac_name() {
     printf 'selinux\n'
 }
 
+drv_timezone_apply() {
+    local zone="$1"
+    if [[ ! -f "/usr/share/zoneinfo/${zone}" ]]; then
+        error "Unknown timezone: ${zone}"
+        return 1
+    fi
+    if [[ "${INIT_SYSTEM}" == "systemd" ]] && command -v timedatectl >/dev/null 2>&1; then
+        run_cmd timedatectl set-timezone "${zone}"
+        return 0
+    fi
+    run_cmd ln -sf "/usr/share/zoneinfo/${zone}" /etc/localtime
+}
+
+drv_locale_apply() {
+    local locale="$1"
+    if ! locale -a 2>/dev/null | grep -Fxq "${locale}"; then
+        error "${locale} is not available. Install glibc-langpack-en or generate it with localedef."
+        return 1
+    fi
+    if [[ "${INIT_SYSTEM}" == "systemd" ]] && command -v localectl >/dev/null 2>&1; then
+        run_cmd localectl set-locale "LANG=${locale}"
+        return 0
+    fi
+    local tmp
+    tmp="$(mktemp)"
+    printf 'LANG=%s\n' "${locale}" > "${tmp}"
+    install_file 0644 "${tmp}" /etc/locale.conf
+    rm -f -- "${tmp}"
+}
+
+drv_timezone_file() {
+    printf '/etc/localtime\n'
+}
+
+drv_locale_files() {
+    printf '/etc/locale.conf\n'
+}
+
 drv_mac_install() {
     drv_pkg_install libselinux-utils policycoreutils
 }

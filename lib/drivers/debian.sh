@@ -184,6 +184,42 @@ drv_f2b_prepare_repo() {
     return 0
 }
 
+drv_timezone_apply() {
+    local zone="$1"
+    if [[ ! -f "/usr/share/zoneinfo/${zone}" ]]; then
+        error "Unknown timezone: ${zone}"
+        return 1
+    fi
+    local tmp
+    tmp="$(mktemp)"
+    printf '%s\n' "${zone}" > "${tmp}"
+    install_file 0644 "${tmp}" /etc/timezone
+    rm -f -- "${tmp}"
+    # tzdata rewrites /etc/localtime and restarts the services that read it.
+    run_cmd dpkg-reconfigure -f noninteractive tzdata
+}
+
+drv_locale_apply() {
+    local locale="$1"
+    if ! command -v locale-gen >/dev/null 2>&1; then
+        error "locale-gen is missing. Install the locales package (apt install locales)."
+        return 1
+    fi
+    if ! locale -a 2>/dev/null | grep -Fxq "${locale}"; then
+        info "Generating ${locale}..."
+        run_cmd locale-gen "${locale}"
+    fi
+    run_cmd update-locale "LANG=${locale}"
+}
+
+drv_timezone_file() {
+    printf '/etc/timezone\n'
+}
+
+drv_locale_files() {
+    printf '/etc/locale.gen\n/etc/default/locale\n'
+}
+
 drv_mac_name() {
     if command -v aa-status >/dev/null 2>&1 || [[ -d /sys/kernel/security/apparmor ]]; then
         printf 'apparmor\n'

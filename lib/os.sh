@@ -40,6 +40,8 @@ DRIVER_CONTRACT=(
     drv_mac_name drv_mac_install drv_mac_status
     drv_sysctl_dir drv_sysctl_file drv_audit_pkg
     drv_timesync_pkg drv_timesync_unit
+    drv_timezone_apply drv_timezone_file
+    drv_locale_apply drv_locale_files
     drv_unattended_setup drv_crypto_policy
 )
 
