@@ -9,15 +9,50 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/../lib/common.sh"
 
 FAILURES=0
+SKIP_FIREWALL=0
+SKIP_FAIL2BAN=0
 SSH_DROPIN="/etc/ssh/sshd_config.d/00-linux-server-bootstrap.conf"
 JAIL_TARGET="/etc/fail2ban/jail.d/00-linux-server-bootstrap.conf"
 
 usage() {
     cat <<EOF
 Usage: bash tests/verify.sh [--user NAME...] [--port N]
+       bash tests/verify.sh [--skip-firewall] [--skip-fail2ban]
 
 Reads ${STATE_FILE} when --user or --port is omitted.
+Pass --skip-firewall or --skip-fail2ban after a bootstrap run that used them.
 EOF
+}
+
+parse_verify_args() {
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --skip-firewall)
+                SKIP_FIREWALL=1
+                shift
+                ;;
+            --skip-fail2ban)
+                SKIP_FAIL2BAN=1
+                shift
+                ;;
+            --user|--port)
+                if [[ $# -lt 2 ]]; then
+                    error "$1 requires a value."
+                    return 2
+                fi
+                parse_standard_args "$1" "$2" || return 2
+                shift 2
+                ;;
+            --yes|-h|--help)
+                parse_standard_args "$1" || return 2
+                shift
+                ;;
+            *)
+                error "Unknown argument: $1"
+                return 2
+                ;;
+        esac
+    done
 }
 
 pass() {
@@ -114,6 +149,11 @@ check_ssh() {
     fi
 }
 
+ufw_lists_port() {
+    # Match the rule column exactly, so port 22 does not pass on a 222/tcp rule.
+    ufw status | awk -v rule="${SSH_PORT}/tcp" '$1 == rule { found = 1 } END { exit found ? 0 : 1 }'
+}
+
 check_firewall() {
     if [[ "${OS_FAMILY}" == "debian" ]]; then
         if command -v ufw >/dev/null 2>&1 && ufw status | head -n 1 | grep -q 'Status: active'; then
@@ -121,8 +161,8 @@ check_firewall() {
         else
             fail "ufw is not active"
         fi
-        if command -v ufw >/dev/null 2>&1 && ufw status | grep -q "${SSH_PORT}/tcp"; then
-            pass "ufw allows ${SSH_PORT}/tcp"
+        if command -v ufw >/dev/null 2>&1 && ufw_lists_port; then
+            pass "ufw has a rule for ${SSH_PORT}/tcp"
         else
             fail "ufw does not list ${SSH_PORT}/tcp"
         fi
@@ -161,8 +201,16 @@ check_fail2ban() {
 }
 
 check_backups() {
+    local -a components=(ssh)
+    if [[ "${SKIP_FIREWALL}" -eq 0 ]]; then
+        components+=(firewall)
+    fi
+    if [[ "${SKIP_FAIL2BAN}" -eq 0 ]]; then
+        components+=(fail2ban)
+    fi
+
     local component
-    for component in ssh firewall fail2ban; do
+    for component in "${components[@]}"; do
         if [[ -L "${BACKUP_ROOT}/${component}/latest" ]]; then
             pass "Backup exists for ${component}"
         else
@@ -172,7 +220,7 @@ check_backups() {
 }
 
 main() {
-    parse_standard_args "$@" || {
+    parse_verify_args "$@" || {
         usage >&2
         exit 2
     }
@@ -194,8 +242,16 @@ main() {
 
     info "Verifying SSH port ${SSH_PORT} for: ${SSH_ALLOW_USERS[*]}"
     check_ssh
-    check_firewall
-    check_fail2ban
+    if [[ "${SKIP_FIREWALL}" -eq 0 ]]; then
+        check_firewall
+    else
+        warn "Not checking the firewall (--skip-firewall)."
+    fi
+    if [[ "${SKIP_FAIL2BAN}" -eq 0 ]]; then
+        check_fail2ban
+    else
+        warn "Not checking fail2ban (--skip-fail2ban)."
+    fi
     check_backups
 
     if [[ "${FAILURES}" -eq 0 ]]; then

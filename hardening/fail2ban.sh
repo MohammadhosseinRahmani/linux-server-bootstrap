@@ -133,12 +133,17 @@ EOF
     fi
 
     local action="" tmp
-    if [[ "${OS_FAMILY}" == "debian" ]]; then
+    if [[ "${OS_FAMILY}" == "debian" ]] && command -v ufw >/dev/null 2>&1; then
         action="ufw"
-    else
+    elif [[ "${OS_FAMILY}" != "debian" ]] && command -v firewall-cmd >/dev/null 2>&1; then
         action="firewallcmd-rich-rules"
     fi
-    if [[ ! -f "/etc/fail2ban/action.d/${action}.conf" ]]; then
+
+    if [[ -z "${action}" ]]; then
+        # The firewall CLI may be absent when the firewall step was skipped.
+        # The action file ships with fail2ban anyway, so probe the command.
+        warn "No usable firewall command found. fail2ban keeps its package default ban action."
+    elif [[ ! -f "/etc/fail2ban/action.d/${action}.conf" ]]; then
         warn "fail2ban action ${action} is missing. The package default ban action will be used."
         action=""
     fi

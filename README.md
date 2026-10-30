@@ -35,7 +35,7 @@ sudo bash hardening/firewall.sh --port 22
 sudo bash hardening/fail2ban.sh --port 22
 ```
 
-Skip a step from the full run with `--skip-firewall` or `--skip-fail2ban`.
+Skip a step from the full run with `--skip-firewall` or `--skip-fail2ban`. `tests/verify.sh` takes the same flags, and the full run passes them on for you.
 
 ## What SSH changes
 
@@ -67,7 +67,7 @@ sudo systemctl restart ssh.socket
 
 The firewall allows the SSH port, denies other inbound traffic, and leaves outbound traffic allowed. If you move off port 22, port 22 stays open while the current session is still using it. Run the firewall script again after you reconnect on the new port.
 
-fail2ban enables the `sshd` jail: 3 failures in 10 minutes, then a 1 hour ban. Debian bans through ufw. RPM bans through firewalld rich rules.
+fail2ban enables the `sshd` jail: 3 failures in 10 minutes, then a 1 hour ban. Debian bans through ufw. RPM bans through firewalld rich rules. If the firewall command is not installed, for example after `--skip-firewall`, fail2ban keeps its own default ban action instead.
 
 ## Backups and rollback
 
