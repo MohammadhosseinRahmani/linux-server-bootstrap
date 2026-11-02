@@ -66,26 +66,32 @@ STATE_FILE="${STATE_DIR}/state.env"
 LOG_FILE="${LOG_FILE:-/var/log/linux-server-bootstrap.log}"
 
 # Shared paths and markers, so a stage and the verifier cannot disagree about
-# where the SSH policy lives.
-# shellcheck disable=SC2034  # read by other scripts, not by this one
-SSH_MAIN_CONFIG="${SSH_MAIN_CONFIG:-/etc/ssh/sshd_config}"
-SSH_CONFIG_DIR="${SSH_CONFIG_DIR:-/etc/ssh/sshd_config.d}"
-SSH_CONFIG_TARGET="${SSH_CONFIG_DIR}/00-linux-server-bootstrap.conf"
-SSH_INCLUDE_LINE='Include /etc/ssh/sshd_config.d/*.conf'
-SSH_BLOCK_BEGIN='# BEGIN linux-server-bootstrap'
-SSH_BLOCK_END='# END linux-server-bootstrap'
-JAIL_TARGET="${JAIL_TARGET:-/etc/fail2ban/jail.d/00-linux-server-bootstrap.conf}"
-LIMITS_TARGET="${LIMITS_TARGET:-/etc/security/limits.d/99-linux-server-bootstrap.conf}"
-SYSTEMD_LIMITS_DROPIN="${SYSTEMD_LIMITS_DROPIN:-/etc/systemd/system.conf.d/99-linux-server-bootstrap.conf}"
-SSH_BANNER_TARGET="${SSH_BANNER_TARGET:-${SSH_CONFIG_DIR}/10-linux-server-bootstrap-banner.conf}"
-SUDOERS_DIR="${SUDOERS_DIR:-/etc/sudoers.d}"
-LOGIN_DEFS_FILE="${LOGIN_DEFS_FILE:-/etc/login.defs}"
-LOGIN_DEFS_BEGIN='# BEGIN linux-server-bootstrap'
-LOGIN_DEFS_END='# END linux-server-bootstrap'
-FAILLOCK_CONF="${FAILLOCK_CONF:-/etc/security/faillock.conf}"
-PWQUALITY_CONF="${PWQUALITY_CONF:-/etc/security/pwquality.conf}"
-SELINUX_CONFIG="${SELINUX_CONFIG:-/etc/selinux/config}"
-APPARMOR_PROFILE_DIR="${APPARMOR_PROFILE_DIR:-/etc/apparmor.d}"
+# where the SSH policy lives. Every name here is read by another script, and a
+# checker that inspects one file at a time can only see the assignment. The brace
+# group is what makes the directive cover the block: a disable applies to the
+# single command that follows it, and a brace group still runs in the current
+# shell, so these stay global exactly as they were.
+# shellcheck disable=SC2034
+{
+    SSH_MAIN_CONFIG="${SSH_MAIN_CONFIG:-/etc/ssh/sshd_config}"
+    SSH_CONFIG_DIR="${SSH_CONFIG_DIR:-/etc/ssh/sshd_config.d}"
+    SSH_CONFIG_TARGET="${SSH_CONFIG_DIR}/00-linux-server-bootstrap.conf"
+    SSH_INCLUDE_LINE='Include /etc/ssh/sshd_config.d/*.conf'
+    SSH_BLOCK_BEGIN='# BEGIN linux-server-bootstrap'
+    SSH_BLOCK_END='# END linux-server-bootstrap'
+    JAIL_TARGET="${JAIL_TARGET:-/etc/fail2ban/jail.d/00-linux-server-bootstrap.conf}"
+    LIMITS_TARGET="${LIMITS_TARGET:-/etc/security/limits.d/99-linux-server-bootstrap.conf}"
+    SYSTEMD_LIMITS_DROPIN="${SYSTEMD_LIMITS_DROPIN:-/etc/systemd/system.conf.d/99-linux-server-bootstrap.conf}"
+    SSH_BANNER_TARGET="${SSH_BANNER_TARGET:-${SSH_CONFIG_DIR}/10-linux-server-bootstrap-banner.conf}"
+    SUDOERS_DIR="${SUDOERS_DIR:-/etc/sudoers.d}"
+    LOGIN_DEFS_FILE="${LOGIN_DEFS_FILE:-/etc/login.defs}"
+    LOGIN_DEFS_BEGIN='# BEGIN linux-server-bootstrap'
+    LOGIN_DEFS_END='# END linux-server-bootstrap'
+    FAILLOCK_CONF="${FAILLOCK_CONF:-/etc/security/faillock.conf}"
+    PWQUALITY_CONF="${PWQUALITY_CONF:-/etc/security/pwquality.conf}"
+    SELINUX_CONFIG="${SELINUX_CONFIG:-/etc/selinux/config}"
+    APPARMOR_PROFILE_DIR="${APPARMOR_PROFILE_DIR:-/etc/apparmor.d}"
+}
 
 # Prints "group mode" for the shadow-family files on this host. The stage that
 # fixes permissions and the verifier that proves it have to agree on the answer,
