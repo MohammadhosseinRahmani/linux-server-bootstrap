@@ -880,8 +880,13 @@ check_auth() {
     want="$(state_value LOCKOUT_FAIL_INTERVAL)"
     if [[ -n "${want}" ]]; then
         have="$(conf_value "${FAILLOCK_CONF}" fail_interval)"
-        [[ "${have}" == "${want}" ]] && pass "auth: faillock fail_interval is ${want}" \
-            || fail "auth: faillock fail_interval is ${have:-unset}, expected ${want}"
+        # Written as if/else rather than A && B || C: pass would have to fail for the
+        # complaint to fire, and a stage reported twice reads as two problems.
+        if [[ "${have}" == "${want}" ]]; then
+            pass "auth: faillock fail_interval is ${want}"
+        else
+            fail "auth: faillock fail_interval is ${have:-unset}, expected ${want}"
+        fi
     fi
 }
 

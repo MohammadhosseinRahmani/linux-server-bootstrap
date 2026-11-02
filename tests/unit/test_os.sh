@@ -3,6 +3,11 @@
 # Runs without root and without touching the host, so CI can execute it on any
 # Linux runner. Usage: bash tests/unit/test_os.sh
 
+# This file's job is to assign the variables lib/os.sh and lib/init.sh read --
+# OS_RELEASE_FILE, OS_VERSION, INIT_SYSTEM -- so every one of them is used in another
+# file and an unused warning here describes the design, not a mistake.
+# shellcheck disable=SC2034
+
 set -uo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
@@ -85,6 +90,8 @@ check_detection() {
     # host would answer every RPM row with its own binary and the table would stop
     # describing family mapping. An EL9 host is assumed here and the fallback has its
     # own cases below.
+    # Called by os_pkg_mgr in the sourced library, not from this file.
+    # shellcheck disable=SC2329
     os_has_command() { [[ "$1" == dnf ]]; }
 
     local status=0
@@ -128,7 +135,6 @@ for family in debian rhel suse; do
     (
         set +u
         OS_RELEASE_FILE="${WORK_DIR}/missing"
-        PROJECT_DIR="${PROJECT_DIR}"
         source "${PROJECT_DIR}/lib/drivers/${family}.sh"
         if driver_requires "${DRIVER_CONTRACT[@]}"; then
             exit 0
@@ -205,6 +211,8 @@ select_pkg_mgr() {
         DRIVER=""
         # The lookup is replaced rather than steered through PATH, because a runner
         # that is itself an RPM host keeps a real dnf in the same directory as awk.
+        # Called by os_pkg_mgr inside the sourced library.
+        # shellcheck disable=SC2329
         os_has_command() { [[ -x "${fake_bin}/$1" ]]; }
         detect_os > /dev/null 2>&1
         printf '%s' "${PKG_MGR}"

@@ -99,6 +99,8 @@ assert_absent_file() {
 # install_file is the only writer these helpers use, so redirecting it keeps the
 # test inside the temporary directory: fixtures are written where they are named,
 # and a hard-coded absolute path lands in a shadow tree.
+# Reached through install_file below, which the sourced library calls.
+# shellcheck disable=SC2329
 install_shadow() {
     local src="$2" dest="$3" target
     case "${dest}" in
@@ -119,6 +121,8 @@ run_lib() {
         # shellcheck disable=SC1091
         source lib/drivers/_pam.sh
         DRY_RUN=1
+        # Redefines the library's own writer, so the caller invokes it by name.
+        # shellcheck disable=SC2329
         install_file() { install_shadow "$@"; }
         "$@"
     )
@@ -151,6 +155,7 @@ FIRST_DIR="${WORK_DIR}/pam-first"
 auth_fixture "${FIRST_DIR}"
 SPLICE_OUT="$(run_lib pam_splice_faillock "${FIRST_DIR}/auth" "${FIRST_DIR}/account" 2>&1)"
 assert_rc "the splice succeeded" 0 "$?"
+assert_lacks "a working splice stays quiet" "${SPLICE_OUT}" "error"
 FIRST_AUTH="$(cat "${FIRST_DIR}/auth")"
 assert_has "the jump counts the inserted line" "${FIRST_AUTH}" "[success=2 default=ignore]"
 assert_has "preauth is inserted" "${FIRST_AUTH}" "pam_faillock.so preauth silent"
@@ -216,6 +221,8 @@ assert_rc "the splice reports failure" 1 "$?"
 assert_has "the refusal is explained" "${NONE_OUT}" "No pam_unix auth line was found"
 assert_eq "the stack was left exactly as found" "${NONE_BEFORE}" "$(cat "${NONE_DIR}/auth")"
 
+# Passed by name to run_lib below, which invokes it inside the sourced library.
+# shellcheck disable=SC2329
 write_confs() {
     faillock_conf_write 5 60 1800
     pwquality_conf_write 16

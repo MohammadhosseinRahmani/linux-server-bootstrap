@@ -12,6 +12,9 @@ source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/_mac.sh"
 # shellcheck source=_pam.sh
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/_pam.sh"
 
+# This family has no socket-activated sshd; the empty value is the answer, and
+# hardening/ssh.sh reads it before backing a drop-in up.
+# shellcheck disable=SC2034
 SSH_SOCKET_DROPIN=""
 
 drv_fw_install() {

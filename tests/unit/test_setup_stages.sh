@@ -180,6 +180,7 @@ assert_has "explains why root is refused" "${ROOT_USER}" "Do not prepare root"
 
 NO_USERS="$(cd "${PROJECT_DIR}" && bash setup/users.sh --yes 2>&1)"
 assert_rc "at least one user is required" 1 "$?"
+assert_has "names the option that is missing" "${NO_USERS}" "Pass at least one --user."
 
 echo
 echo "== the shared state file keeps keys from every stage =="

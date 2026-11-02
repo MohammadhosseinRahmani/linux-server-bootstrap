@@ -8,6 +8,8 @@ if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
 fi
 
 _LIB_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+# Every stage reads this to find its templates; it is assigned here, used there.
+# shellcheck disable=SC2034
 PROJECT_DIR="$(cd -- "${_LIB_DIR}/.." && pwd)"
 
 # Logging must exist before the helpers below are sourced, because they report
@@ -65,6 +67,7 @@ LOG_FILE="${LOG_FILE:-/var/log/linux-server-bootstrap.log}"
 
 # Shared paths and markers, so a stage and the verifier cannot disagree about
 # where the SSH policy lives.
+# shellcheck disable=SC2034  # read by other scripts, not by this one
 SSH_MAIN_CONFIG="${SSH_MAIN_CONFIG:-/etc/ssh/sshd_config}"
 SSH_CONFIG_DIR="${SSH_CONFIG_DIR:-/etc/ssh/sshd_config.d}"
 SSH_CONFIG_TARGET="${SSH_CONFIG_DIR}/00-linux-server-bootstrap.conf"
@@ -410,8 +413,10 @@ save_state() {
     local tmp users_line
     tmp="$(mktemp)"
     users_line="$(allow_users_text)"
+    # Carried-over keys are copied first and this stage's own keys appended after,
+    # rather than a helper writing into the very file a redirect group is building.
+    preserve_other_state_keys "${tmp}"
     {
-        preserve_other_state_keys "${tmp}"
         printf 'SSH_PORT=%s\n' "${SSH_PORT}"
         printf 'SSH_ALLOW_USERS_LINE=%s\n' "${users_line}"
         printf 'OS_FAMILY=%s\n' "${OS_FAMILY}"
@@ -425,7 +430,7 @@ save_state() {
                 printf '%s\n' "${item}"
             done
         fi
-    } > "${tmp}"
+    } >> "${tmp}"
     install -m 0644 -o root -g root "${tmp}" "${STATE_FILE}"
     rm -f -- "${tmp}"
     info "Saved state to ${STATE_FILE}"
