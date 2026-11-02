@@ -30,10 +30,25 @@ jobs:
           sudo apt-get install -y --no-install-recommends shellcheck
           shellcheck --version
 
+      # Everything stays at --severity=info; the only codes switched off are ones this
+      # architecture cannot satisfy, and each exclusion says why:
+      #   SC1090  a driver sources its shared helper through a computed path
+      #           (source "$(dirname ...)/_pam.sh"), which no checker can resolve
+      #   SC2016  awk programs and stub bodies in single quotes, where a literal $ is
+      #           the point
+      #   SC2030  a test subshell sets the variable the sourced library reads
+      #   SC2031  and the matching complaint that the assignment "may be lost" outside
+      # --source-path=SCRIPTDIR lets the rest of the source chain resolve, so an unused
+      # or misspelled variable across lib/ and a stage is still an error.
       - name: Static analysis
         run: |
           find . -name '*.sh' -not -path './.git/*' -print0 \
-            | xargs -0 shellcheck --shell=bash --severity=info --external-sources
+            | xargs -0 shellcheck \
+                --shell=bash \
+                --severity=info \
+                --external-sources \
+                --source-path=SCRIPTDIR \
+                --exclude=SC1090,SC2016,SC2030,SC2031
 
       - name: Syntax
         run: |
