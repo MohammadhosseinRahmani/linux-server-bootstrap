@@ -107,18 +107,21 @@ jobs:
               export DEBIAN_FRONTEND=noninteractive
               apt-get update -qq
               apt-get install -y -qq --no-install-recommends \
-                ca-certificates git hostname procps tar gzip xz-utils unzip curl
+                ca-certificates git hostname procps tar gzip xz-utils unzip
               ;;
             *fedora* | *rhel* | *centos* | *rocky* | *alma*)
+              # No curl: nothing here fetches over http, and on EL9 the minimal
+              # image ships curl-minimal, which conflicts with the full curl
+              # package rather than being replaced by it.
               if command -v dnf >/dev/null 2>&1; then
-                dnf install -y -q git hostname procps tar gzip xz unzip which curl
+                dnf install -y -q git hostname procps tar gzip xz unzip which
               else
-                yum install -y -q git hostname procps tar gzip unzip which curl
+                yum install -y -q git hostname procps tar gzip unzip which
               fi
               ;;
             *suse* | *leap* | *sles*)
-              zypper --non-interactive install git hostname procps tar gzip which curl || \
-                zypper --non-interactive install git-core hostname procps tar gzip which curl
+              zypper --non-interactive install git hostname procps tar gzip which || \
+                zypper --non-interactive install git-core hostname procps tar gzip which
               ;;
             *)
               echo "No package rule for ${ID:-unknown} (${ID_LIKE:-none})" >&2
