@@ -4,3 +4,6 @@
 *~
 .DS_Store
 Thumbs.db
+
+# Vagrant state is per-machine and never belongs in a repository
+.vagrant/

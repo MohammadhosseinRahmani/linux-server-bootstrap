@@ -1,0 +1,118 @@
+name: test
+
+# Push and pull requests prove the current change. The weekly run matters more
+# than it looks: a base image that moves its config file breaks a driver, and
+# nothing in this repository would change to tell us.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 6 * * 1'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: test-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install shellcheck
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends shellcheck
+          shellcheck --version
+
+      - name: Static analysis
+        run: |
+          find . -name '*.sh' -not -path './.git/*' -print0 \
+            | xargs -0 shellcheck --shell=bash --severity=info --external-sources
+
+      - name: Syntax
+        run: |
+          find . -name '*.sh' -not -path './.git/*' -print0 \
+            | xargs -0 -n1 bash -n
+
+  # Every image runs the same ci/selfcheck.sh the project's README tells an
+  # operator to run by hand, so a green check here means the same thing as a
+  # green check on their server.
+  #
+  # EL7 is deliberately absent: its yum mirrors are retired, so a job that
+  # cannot install git proves nothing. EL7 bash 4.2 and authconfig are covered
+  # by ci/README.md's local matrix instead.
+  distro-matrix:
+    needs: lint
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # Each row says which driver its image is expected to load, so the job
+        # proves it tested the family it claims to have tested.
+        include:
+          - name: ubuntu-24.04
+            image: ubuntu:24.04
+            driver: debian
+          - name: ubuntu-22.04
+            image: ubuntu:22.04
+            driver: debian
+          - name: debian-12
+            image: debian:12
+            driver: debian
+          - name: rocky-9
+            image: rockylinux:9
+            driver: rhel
+          - name: alma-8
+            image: almalinux:8
+            driver: rhel
+          - name: leap-15.6
+            image: opensuse/leap:15.6
+            driver: suse
+          - name: fedora-42
+            image: fedora:42
+            driver: rhel
+    container:
+      image: ${{ matrix.image }}
+    steps:
+      # Runs before checkout, because actions/checkout shells out to git inside
+      # the image, and a base image has no git and no repository to read a
+      # script from. Once the code is on disk the drivers do this detection
+      # properly; here it has to be repeated from /etc/os-release.
+      - name: Make the image able to check out and test
+        run: |
+          . /etc/os-release
+          case " ${ID:-} ${ID_LIKE:-} " in
+            *debian* | *ubuntu*)
+              export DEBIAN_FRONTEND=noninteractive
+              apt-get update -qq
+              apt-get install -y -qq --no-install-recommends \
+                ca-certificates git hostname procps tar gzip xz-utils unzip curl
+              ;;
+            *fedora* | *rhel* | *centos* | *rocky* | *alma*)
+              if command -v dnf >/dev/null 2>&1; then
+                dnf install -y -q git hostname procps tar gzip xz unzip which curl
+              else
+                yum install -y -q git hostname procps tar gzip unzip which curl
+              fi
+              ;;
+            *suse* | *leap* | *sles*)
+              zypper --non-interactive install git hostname procps tar gzip which curl || \
+                zypper --non-interactive install git-core hostname procps tar gzip which curl
+              ;;
+            *)
+              echo "No package rule for ${ID:-unknown} (${ID_LIKE:-none})" >&2
+              exit 1
+              ;;
+          esac
+          git --version
+
+      - uses: actions/checkout@v4
+
+      - name: Self-check without changing the container
+        run: bash ci/selfcheck.sh --expect-driver '${{ matrix.driver }}'
