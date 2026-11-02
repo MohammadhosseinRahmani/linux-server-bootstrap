@@ -283,10 +283,26 @@ assert_has "the privileged watches are announced" "${AUDIT_OUT}" "watch every se
 assert_has "the audit plan completes" "${AUDIT_OUT}" "Audit rule plan is complete."
 assert_lacks "an absent auditctl is not reported as loaded" "${AUDIT_OUT}" "rule(s) loaded"
 
-MAC_OUT="$(cd "${PROJECT_DIR}" && bash hardening/mac.sh --yes --dry-run 2>&1)"
+# A MAC plan depends on what the host actually ships, and a slim container image
+# has neither AppArmor nor SELinux tools. The fixtures give each family a definite
+# answer, so the same assertion holds on Debian, RPM and SUSE runners.
+MAC_STUB="${WORK_DIR}/mac-stub"
+mkdir -p "${MAC_STUB}" "${WORK_DIR}/apparmor.d"
+printf 'profile unittest /bin/true {\n}\n' > "${WORK_DIR}/apparmor.d/unittest"
+printf 'case "$1" in\n  --enabled) exit 0 ;;\nesac\nexit 0\n' > "${MAC_STUB}/aa-status"
+printf 'printf "Enforcing\\n"\nexit 0\n' > "${MAC_STUB}/getenforce"
+printf 'exit 0\n' > "${MAC_STUB}/setenforce"
+chmod +x "${MAC_STUB}/aa-status" "${MAC_STUB}/getenforce" "${MAC_STUB}/setenforce"
+printf 'SELINUX=permissive\n' > "${WORK_DIR}/selinux_config"
+
+MAC_OUT="$(cd "${PROJECT_DIR}" \
+    && PATH="${MAC_STUB}:${PATH}" \
+        APPARMOR_PROFILE_DIR="${WORK_DIR}/apparmor.d" \
+        SELINUX_CONFIG="${WORK_DIR}/selinux_config" \
+        bash hardening/mac.sh --yes --dry-run 2>&1)"
 assert_rc "mac.sh plans successfully" 0 "$?"
-assert_has_any "the MAC plan ends or the host cannot enforce" "${MAC_OUT}" \
-    "Mandatory access control plan is complete." "nothing was verified"
+assert_has "the MAC plan completes" "${MAC_OUT}" \
+    "Mandatory access control plan is complete."
 
 SERVICES_OUT="$(cd "${PROJECT_DIR}" && bash hardening/services.sh --yes --dry-run --include-optional 2>&1)"
 assert_rc "services.sh plans successfully" 0 "$?"

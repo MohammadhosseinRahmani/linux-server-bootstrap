@@ -87,34 +87,46 @@ fi
 assert_lacks "no package download happened" "${FW_OUT}" "Reading package lists"
 
 echo
-echo "== state and backup trees land in the sandbox only =="
+echo "== a dry run builds no backup tree anywhere =="
+# The backup root the stage was pointed at stays empty as well: the latest symlink a
+# stage writes there is what tests/verify.sh reads to decide the stage was applied, so
+# a plan that left one behind would be indistinguishable from a change.
 TESTS_RUN=$((TESTS_RUN + 1))
 if [[ -d "${BACKUP_ROOT}/firewall" ]]; then
-    ok "backup tree created under the sandbox"
+    nok "dry run wrote a backup tree at ${BACKUP_ROOT}/firewall"
 else
-    nok "no sandbox backup tree at ${BACKUP_ROOT}/firewall"
+    ok "no backup tree written, in the sandbox or on the host"
 fi
 assert_absent_file "host backup root untouched" "/var/backups/linux-server-bootstrap"
 assert_absent_file "host state file untouched" "/etc/linux-server-bootstrap/state.env"
 
 echo
-echo "== ssh stage refuses to half-apply without sshd =="
-# The stage must stop at its prerequisite check instead of writing config for a
-# daemon that is not there.
-SSH_OUT="$(cd "${PROJECT_DIR}" && bash hardening/ssh.sh --user rootish --port 2222 --yes 2>&1)"
+echo "== ssh stage stops before writing for an account it cannot prove =="
+# The stage checks the allow-listed account for an installed public key before it
+# prints a plan, and needs an sshd binary afterwards. Both are host facts, so the
+# test looks for an account that really carries a key and expects the refusal when
+# the runner has none; either way nothing may be written, because this runs dry.
+SSH_TEST_USER=""
+while IFS=$'\t' read -r candidate candidate_home; do
+    [[ -s "${candidate_home}/.ssh/authorized_keys" ]] || continue
+    SSH_TEST_USER="${candidate}"
+    break
+done < <(awk -F: '{printf "%s\t%s\n", $1, $6}' /etc/passwd)
+
+SSH_OUT="$(cd "${PROJECT_DIR}" && bash hardening/ssh.sh --user "${SSH_TEST_USER:-nobody}" --port 2222 --yes 2>&1)"
 SSH_RC=$?
-if command -v sshd >/dev/null 2>&1; then
-    assert_has "ssh stage runs with sshd present" "${SSH_OUT}" "SSH hardening will"
+if [[ -n "${SSH_TEST_USER}" ]] && command -v sshd >/dev/null 2>&1; then
+    assert_has "ssh stage runs with a keyed account and sshd present" "${SSH_OUT}" "SSH hardening will"
 else
     TESTS_RUN=$((TESTS_RUN + 1))
     if [[ "${SSH_RC}" -ne 0 ]] && ! grep -q "Installed " <<< "${SSH_OUT}"; then
         ok "ssh stage aborted before writing any config"
     else
-        nok "ssh stage should abort without sshd (rc=${SSH_RC})"
+        nok "ssh stage should abort without a provable account (rc=${SSH_RC})"
         printf '%s\n' "${SSH_OUT}" | tail -20
     fi
-    assert_absent_file "no drop-in written" "${WORK_DIR}/etc-ssh"
 fi
+assert_absent_file "no drop-in written" "${WORK_DIR}/etc-ssh"
 
 echo
 echo "== fail2ban stage dry-run =="

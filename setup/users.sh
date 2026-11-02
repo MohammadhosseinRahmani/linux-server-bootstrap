@@ -248,7 +248,10 @@ grant_sudo() {
         fi
     fi
 
-    if [[ ! -d /etc/sudoers.d ]]; then
+    # A minimal image can ship without sudo at all, which the install above exists to
+    # fix. Under --dry-run that install is only simulated, so a missing directory says
+    # nothing about the real run and must not abort the plan.
+    if ! dry_run && [[ ! -d /etc/sudoers.d ]]; then
         error "/etc/sudoers.d does not exist, so sudo cannot be granted safely."
         rm -f -- "${tmp}"
         return 1

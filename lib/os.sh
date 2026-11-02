@@ -86,6 +86,32 @@ os_pick_family() {
     return 1
 }
 
+# The command lookup is a function so a test can describe a host that has only yum
+# without editing the runner's PATH, which on an RPM machine also holds awk and grep.
+os_has_command() {
+    command -v "$1" >/dev/null 2>&1
+}
+
+# The package manager a stage installs with. Debian and SUSE have one answer; the
+# RPM family prefers dnf, falls back to yum, and defaults to dnf when neither is
+# installed yet, because require_pkg_mgr re-checks before anything is installed and
+# so read-only runs still work on a minimal system.
+os_pkg_mgr() {
+    case "$1" in
+        debian) printf 'apt\n' ;;
+        rhel)
+            if os_has_command dnf; then
+                printf 'dnf\n'
+            elif os_has_command yum; then
+                printf 'yum\n'
+            else
+                printf 'dnf\n'
+            fi
+            ;;
+        suse) printf 'zypper\n' ;;
+    esac
+}
+
 detect_os() {
     if [[ ! -r "${OS_RELEASE_FILE}" ]]; then
         error "${OS_RELEASE_FILE} is missing. This script supports Debian, RPM, and SUSE Linux only."
@@ -102,26 +128,7 @@ detect_os() {
         return 1
     fi
 
-    case "${OS_FAMILY}" in
-        debian)
-            PKG_MGR="apt"
-            ;;
-        rhel)
-            # Prefer dnf, fall back to yum, and default to dnf when neither is
-            # installed yet. require_pkg_mgr checks availability before a stage
-            # installs anything, so read-only runs work on a minimal system.
-            if command -v dnf >/dev/null 2>&1; then
-                PKG_MGR="dnf"
-            elif command -v yum >/dev/null 2>&1; then
-                PKG_MGR="yum"
-            else
-                PKG_MGR="dnf"
-            fi
-            ;;
-        suse)
-            PKG_MGR="zypper"
-            ;;
-    esac
+    PKG_MGR="$(os_pkg_mgr "${OS_FAMILY}")"
 
     DRIVER="${OS_FAMILY}"
     DRIVER_PATH="${PROJECT_DIR}/lib/drivers/${DRIVER}.sh"

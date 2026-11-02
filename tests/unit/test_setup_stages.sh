@@ -92,7 +92,22 @@ fi
 
 echo
 echo "== base setup dry-run =="
-BASE_OUT="$(cd "${PROJECT_DIR}" && bash setup/base.sh --updates --hostname testbox \
+# The plan quotes the driver's own commands, so this pass is pinned to a Debian
+# fixture instead of the runner's family and the assertions hold on every distro in
+# the matrix. The service manager is pinned for the same reason: WSL and a container
+# answer sysv, and a sysv plan quotes chkconfig instead of systemctl. The stubs cover
+# the binaries that family owns: a stage that installs looks for its package manager
+# before it prints a line, dry run or not, and the locale step asks for locale-gen
+# before it can report what it would generate.
+mkdir -p "${SANDBOX}/bin"
+for stub in apt apt-get locale-gen update-locale; do
+    printf '#!/bin/sh\nexit 0\n' > "${SANDBOX}/bin/${stub}"
+    chmod +x "${SANDBOX}/bin/${stub}"
+done
+printf 'NAME="Debian GNU/Linux"\nID=debian\nVERSION_ID="12"\n' > "${SANDBOX}/os-release.debian"
+BASE_OUT="$(cd "${PROJECT_DIR}" && PATH="${SANDBOX}/bin:${PATH}" \
+    OS_RELEASE_FILE="${SANDBOX}/os-release.debian" INIT_SYSTEM=systemd \
+    bash setup/base.sh --updates --hostname testbox \
     --timezone UTC --locale C.UTF-8 --timesync --autoupdates --yes 2>&1)"
 BASE_RC=$?
 assert_rc "base.sh plans successfully" 0 "${BASE_RC}"

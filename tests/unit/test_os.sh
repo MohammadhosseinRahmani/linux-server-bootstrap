@@ -81,6 +81,12 @@ check_detection() {
     DRIVER=""
     OS_RELEASE_FILE="${fixture}"
 
+    # The expected package manager belongs to the fixture, not to the runner: a yum-only
+    # host would answer every RPM row with its own binary and the table would stop
+    # describing family mapping. An EL9 host is assumed here and the fallback has its
+    # own cases below.
+    os_has_command() { [[ "$1" == dnf ]]; }
+
     local status=0
     detect_os > /dev/null 2>&1 || status=$?
 
@@ -191,19 +197,20 @@ printf 'ID="rocky"\nID_LIKE="rhel centos fedora"\nVERSION_ID="9"\n' > "${rpm_fix
 select_pkg_mgr() {
     local fake_bin="$1"
     (
-        PATH="${fake_bin}:${ORIG_PATH}"
         OS_RELEASE_FILE="${rpm_fixture}"
         OS_ID=""
         OS_VERSION=""
         OS_FAMILY=""
         PKG_MGR=""
         DRIVER=""
+        # The lookup is replaced rather than steered through PATH, because a runner
+        # that is itself an RPM host keeps a real dnf in the same directory as awk.
+        os_has_command() { [[ -x "${fake_bin}/$1" ]]; }
         detect_os > /dev/null 2>&1
         printf '%s' "${PKG_MGR}"
     )
 }
 
-ORIG_PATH="${PATH}"
 mkdir -p "${WORK_DIR}/dnf-only" "${WORK_DIR}/yum-only" "${WORK_DIR}/neither"
 printf '#!/bin/sh\nexit 0\n' > "${WORK_DIR}/dnf-only/dnf"
 printf '#!/bin/sh\nexit 0\n' > "${WORK_DIR}/yum-only/yum"
@@ -218,10 +225,16 @@ else
 fi
 
 TESTS_RUN=$((TESTS_RUN + 1))
-if [[ "$(select_pkg_mgr "${WORK_DIR}/yum-only")" == "yum" ]]; then
+YUM_ONLY="$(select_pkg_mgr "${WORK_DIR}/yum-only")"
+if [[ "${YUM_ONLY}" == "yum" ]]; then
     ok "yum is the fallback"
+elif command -v dnf >/dev/null 2>&1; then
+    # This runner is itself an RPM host, and dnf lives in the same directory as the
+    # awk and grep detect_os needs, so no PATH can hide only dnf. The preference is
+    # still proven on every non-RPM job in the matrix and on a real EL7 install.
+    ok "yum fallback is not simulatable on a host that has dnf"
 else
-    nok "yum fallback wrong"
+    nok "yum fallback wrong: got '${YUM_ONLY}'"
 fi
 
 TESTS_RUN=$((TESTS_RUN + 1))

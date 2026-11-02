@@ -387,9 +387,19 @@ preserve_other_state_keys() {
     done < "${STATE_FILE}"
 }
 
+# bash 4.2 treats an empty array expansion as an unbound variable under set -u, and
+# every stage carries this state whether or not it was given a user list.
+allow_users_text() {
+    if [[ "${#SSH_ALLOW_USERS[@]}" -eq 0 ]]; then
+        printf '\n'
+    else
+        printf '%s' "${SSH_ALLOW_USERS[*]}"
+    fi
+}
+
 save_state() {
     if dry_run; then
-        echo "  [dry-run] save state ${SSH_PORT} ${SSH_ALLOW_USERS[*]} -> ${STATE_FILE}"
+        echo "  [dry-run] save state ${SSH_PORT} $(allow_users_text) -> ${STATE_FILE}"
         _log DRYRUN "save_state"
         return 0
     fi
@@ -397,12 +407,13 @@ save_state() {
     mkdir -p -- "${STATE_DIR}"
     chmod 0755 "${STATE_DIR}"
 
-    local tmp
+    local tmp users_line
     tmp="$(mktemp)"
+    users_line="$(allow_users_text)"
     {
         preserve_other_state_keys "${tmp}"
         printf 'SSH_PORT=%s\n' "${SSH_PORT}"
-        printf 'SSH_ALLOW_USERS_LINE=%s\n' "${SSH_ALLOW_USERS[*]}"
+        printf 'SSH_ALLOW_USERS_LINE=%s\n' "${users_line}"
         printf 'OS_FAMILY=%s\n' "${OS_FAMILY}"
         printf 'OS_ID=%s\n' "${OS_ID}"
         if [[ -n "${SSH_DROPIN_STYLE:-}" ]]; then
@@ -536,6 +547,15 @@ backup_begin() {
     timestamp="$(date '+%Y%m%d-%H%M%S')"
     BACKUP_DIR="${BACKUP_ROOT}/${component}/${timestamp}"
 
+    # A dry run leaves no trace. The directory and the latest symlink written below are
+    # exactly what tests/verify.sh reads to decide that a stage was applied, so creating
+    # them here would make a plan look like a change and the verifier would then fail the
+    # values the plan never wrote.
+    if dry_run; then
+        info "Dry run: no backup written, would have used ${BACKUP_DIR}"
+        return 0
+    fi
+
     mkdir -p -- "${BACKUP_DIR}/files" "${BACKUP_DIR}/trees" "${BACKUP_DIR}/snapshots"
     chmod 0700 "${BACKUP_ROOT}" "${BACKUP_ROOT}/${component}" "${BACKUP_DIR}" || true
 
@@ -553,6 +573,9 @@ record_kv() {
         error "backup_begin was not called."
         return 1
     fi
+    if dry_run; then
+        return 0
+    fi
     printf '%s=%s\n' "$1" "$2" >> "${BACKUP_DIR}/manifest.env"
 }
 
@@ -561,6 +584,9 @@ backup_file() {
     if [[ -z "${BACKUP_DIR}" ]]; then
         error "backup_begin was not called."
         return 1
+    fi
+    if dry_run; then
+        return 0
     fi
 
     if [[ -e "${path}" ]]; then
@@ -580,6 +606,9 @@ backup_tree() {
     if [[ -z "${BACKUP_DIR}" ]]; then
         error "backup_begin was not called."
         return 1
+    fi
+    if dry_run; then
+        return 0
     fi
 
     local name
@@ -602,6 +631,9 @@ save_snapshot() {
         error "backup_begin was not called."
         return 1
     fi
+    if dry_run; then
+        return 0
+    fi
     "$@" > "${BACKUP_DIR}/snapshots/${name}" 2>&1 || true
     info "Saved snapshot ${BACKUP_DIR}/snapshots/${name}"
 }
@@ -614,6 +646,9 @@ record_modes() {
     if [[ -z "${BACKUP_DIR}" ]]; then
         error "backup_begin was not called."
         return 1
+    fi
+    if dry_run; then
+        return 0
     fi
     for path in "$@"; do
         [[ -e "${path}" ]] || continue
@@ -710,6 +745,10 @@ promote_previous_backup() {
     local component="$1"
     local root="${BACKUP_ROOT}/${component}"
     local current=""
+    # Nothing was backed up, so there is no pointer to move and no tree to search.
+    if dry_run; then
+        return 0
+    fi
     if [[ -L "${root}/latest" ]]; then
         current="$(readlink -f -- "${root}/latest")"
     fi

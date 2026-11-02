@@ -8,6 +8,14 @@
 INIT_SYSTEM="${INIT_SYSTEM:-}"
 
 detect_init() {
+    # A value already in the environment is an override, the same seam OS_RELEASE_FILE
+    # is: it lets a test describe a systemd host from inside a container or a sysv host
+    # from a VM. Probing would silently replace it with the runner's own answer.
+    if [[ -n "${INIT_SYSTEM}" ]]; then
+        info "Service manager is ${INIT_SYSTEM} (override)."
+        return 0
+    fi
+
     if command -v systemctl >/dev/null 2>&1 && [[ -d /run/systemd/system ]]; then
         INIT_SYSTEM="systemd"
     elif command -v service >/dev/null 2>&1; then

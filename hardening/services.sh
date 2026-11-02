@@ -64,6 +64,10 @@ collect_present_units() {
 
 record_current_state() {
     local unit state
+    # A dry run builds no backup tree, so there is no snapshots directory to append to.
+    if dry_run; then
+        return 0
+    fi
     for unit in "${DISABLED_UNITS[@]}"; do
         state="$(svc_is_enabled "${unit}")"
         printf '%s %s\n' "${unit}" "${state}" >> "${BACKUP_DIR}/snapshots/units.txt"

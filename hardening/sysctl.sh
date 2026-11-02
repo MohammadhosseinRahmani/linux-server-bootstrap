@@ -70,7 +70,11 @@ key_is_routing() {
 
 proc_path_for() {
     local key="$1"
-    printf '/proc/sys/%s\n' "${key//./\/}"
+    # The slash comes from a variable on purpose. Written as ${key//./\/} bash 4.2
+    # keeps the backslash, which turns every path into /proc/sys/net\/ipv4 and makes
+    # the whole template look unsupported on EL7.
+    local slash='/'
+    printf '/proc/sys/%s\n' "${key//./${slash}}"
 }
 
 live_value() {
@@ -142,6 +146,10 @@ write_target() {
 # The values the kernel holds right now are the only correct rollback target.
 snapshot_live_values() {
     local index key value path
+    # A dry run builds no backup tree, so there is no snapshots directory to append to.
+    if dry_run; then
+        return 0
+    fi
     for index in "${!SYSCTL_KEYS[@]}"; do
         key="${SYSCTL_KEYS["${index}"]}"
         path="$(proc_path_for "${key}")"
