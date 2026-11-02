@@ -98,9 +98,9 @@ validate_requested() {
 
 timezone_is_current() {
     local want="$1" current=""
-    current="$(readlink -f /etc/localtime 2>/dev/null | sed 's|.*/zoneinfo/||' || true)"
-    if [[ -f /etc/timezone ]]; then
-        current="$(head -n 1 /etc/timezone)"
+    current="$(readlink -f "${LOCALTIME_FILE}" 2>/dev/null | sed 's|.*/zoneinfo/||' || true)"
+    if [[ -f "${TIMEZONE_NAME_FILE}" ]]; then
+        current="$(head -n 1 "${TIMEZONE_NAME_FILE}")"
     fi
     [[ "${current}" == "${want}" ]]
 }

@@ -84,6 +84,12 @@ printf 'this is not a public key\n' > "${SANDBOX}/badkey.pub"
 mkdir -p "${SANDBOX}/zoneinfo/Europe"
 printf 'UTC\n' > "${SANDBOX}/zoneinfo/UTC"
 printf 'CET-1\n' > "${SANDBOX}/zoneinfo/Europe/Berlin"
+# The stage also asks whether the clock already says what the operator wants, and a
+# container's clock usually does: its /etc/localtime points at UTC, so the timezone
+# step is reported as already done and the plan never shows the change. The fixture
+# is a Berlin clock, which makes every runner describe the same edit.
+ln -sfn "${SANDBOX}/zoneinfo/Europe/Berlin" "${SANDBOX}/localtime"
+printf 'Europe/Berlin\n' > "${SANDBOX}/timezone-name"
 
 HOSTNAME_BEFORE="$(cat /etc/hostname)"
 
@@ -123,6 +129,7 @@ printf 'NAME="Debian GNU/Linux"\nID=debian\nVERSION_ID="12"\n' > "${SANDBOX}/os-
 BASE_OUT="$(cd "${PROJECT_DIR}" && PATH="${SANDBOX}/bin:${PATH}" \
     OS_RELEASE_FILE="${SANDBOX}/os-release.debian" INIT_SYSTEM=systemd \
     ZONEINFO_DIR="${SANDBOX}/zoneinfo" \
+    LOCALTIME_FILE="${SANDBOX}/localtime" TIMEZONE_NAME_FILE="${SANDBOX}/timezone-name" \
     bash setup/base.sh --updates --hostname testbox \
     --timezone UTC --locale C.UTF-8 --timesync --autoupdates --yes 2>&1)"
 BASE_RC=$?
@@ -159,6 +166,7 @@ assert_rc "an empty request is refused" 2 "$?"
 assert_has "lists the usable options" "${NO_ARGS}" "Nothing to do."
 
 BAD_TZ="$(cd "${PROJECT_DIR}" && ZONEINFO_DIR="${SANDBOX}/zoneinfo" \
+    LOCALTIME_FILE="${SANDBOX}/localtime" TIMEZONE_NAME_FILE="${SANDBOX}/timezone-name" \
     bash setup/base.sh --timezone Not/AZone --yes 2>&1)"
 BAD_TZ_RC=$?
 assert_rc "unknown timezone is refused" 1 "${BAD_TZ_RC}"

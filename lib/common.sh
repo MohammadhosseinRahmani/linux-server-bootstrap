@@ -92,6 +92,8 @@ LOG_FILE="${LOG_FILE:-/var/log/linux-server-bootstrap.log}"
     SELINUX_CONFIG="${SELINUX_CONFIG:-/etc/selinux/config}"
     APPARMOR_PROFILE_DIR="${APPARMOR_PROFILE_DIR:-/etc/apparmor.d}"
     ZONEINFO_DIR="${ZONEINFO_DIR:-/usr/share/zoneinfo}"
+    LOCALTIME_FILE="${LOCALTIME_FILE:-/etc/localtime}"
+    TIMEZONE_NAME_FILE="${TIMEZONE_NAME_FILE:-/etc/timezone}"
 }
 
 # Prints "group mode" for the shadow-family files on this host. The stage that
