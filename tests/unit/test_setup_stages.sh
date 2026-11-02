@@ -71,6 +71,14 @@ assert_absent_file() {
 printf 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIunittestkey unit@test\n' > "${SANDBOX}/key.pub"
 printf 'this is not a public key\n' > "${SANDBOX}/badkey.pub"
 
+# The driver looks a zone up in this tree before it plans the change, so the pass
+# reads a fixture rather than the runner's /usr/share/zoneinfo. UTC is in it and
+# Not/AZone is not, which is the whole difference the two cases below assert; an
+# image that ships without tzdata would otherwise answer both the same way.
+mkdir -p "${SANDBOX}/zoneinfo/Europe"
+printf 'UTC\n' > "${SANDBOX}/zoneinfo/UTC"
+printf 'CET-1\n' > "${SANDBOX}/zoneinfo/Europe/Berlin"
+
 HOSTNAME_BEFORE="$(cat /etc/hostname)"
 
 echo "== every stage entry point enables errtrace =="
@@ -97,16 +105,18 @@ echo "== base setup dry-run =="
 # the matrix. The service manager is pinned for the same reason: WSL and a container
 # answer sysv, and a sysv plan quotes chkconfig instead of systemctl. The stubs cover
 # the binaries that family owns: a stage that installs looks for its package manager
-# before it prints a line, dry run or not, and the locale step asks for locale-gen
-# before it can report what it would generate.
+# before it prints a line, dry run or not, the locale step asks for locale-gen before
+# it can report what it would generate, and a systemd host is checked for the
+# systemctl binary the enable step names even though the dry run never runs it.
 mkdir -p "${SANDBOX}/bin"
-for stub in apt apt-get locale-gen update-locale; do
+for stub in apt apt-get locale-gen update-locale systemctl; do
     printf '#!/bin/sh\nexit 0\n' > "${SANDBOX}/bin/${stub}"
     chmod +x "${SANDBOX}/bin/${stub}"
 done
 printf 'NAME="Debian GNU/Linux"\nID=debian\nVERSION_ID="12"\n' > "${SANDBOX}/os-release.debian"
 BASE_OUT="$(cd "${PROJECT_DIR}" && PATH="${SANDBOX}/bin:${PATH}" \
     OS_RELEASE_FILE="${SANDBOX}/os-release.debian" INIT_SYSTEM=systemd \
+    ZONEINFO_DIR="${SANDBOX}/zoneinfo" \
     bash setup/base.sh --updates --hostname testbox \
     --timezone UTC --locale C.UTF-8 --timesync --autoupdates --yes 2>&1)"
 BASE_RC=$?
@@ -142,7 +152,8 @@ NO_ARGS="$(cd "${PROJECT_DIR}" && bash setup/base.sh --yes 2>&1)"
 assert_rc "an empty request is refused" 2 "$?"
 assert_has "lists the usable options" "${NO_ARGS}" "Nothing to do."
 
-BAD_TZ="$(cd "${PROJECT_DIR}" && bash setup/base.sh --timezone Not/AZone --yes 2>&1)"
+BAD_TZ="$(cd "${PROJECT_DIR}" && ZONEINFO_DIR="${SANDBOX}/zoneinfo" \
+    bash setup/base.sh --timezone Not/AZone --yes 2>&1)"
 BAD_TZ_RC=$?
 assert_rc "unknown timezone is refused" 1 "${BAD_TZ_RC}"
 assert_has "driver rejects the zone" "${BAD_TZ}" "Unknown timezone: Not/AZone"

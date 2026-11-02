@@ -193,6 +193,16 @@ EOF
     done
 }
 
+# A driver checks a zone name against the zone database before it plans the change,
+# and a slim image can ship without that database. The fixture is the database the
+# pass reads, so every case sees the same answer for UTC whether or not the runner
+# has tzdata installed.
+zone_fixture() {
+    mkdir -p "${WORK_DIR}/zoneinfo/Europe"
+    printf 'UTC\n' > "${WORK_DIR}/zoneinfo/UTC"
+    printf 'CET-1\n' > "${WORK_DIR}/zoneinfo/Europe/Berlin"
+}
+
 # aa-status reports an enabled AppArmor and getenforce a permissive SELinux. Both
 # audit loaders exist, so the transcript shows which one the driver prefers. A
 # case that needs a different answer installs its own stub first: these are
@@ -235,6 +245,7 @@ run_driver() {
         export SELINUX_CONFIG="${WORK_DIR}/selinux"
         export PAM_DIR="${WORK_DIR}/pam"
         export PAM_FAILLOCK_MODULE_PATH="${WORK_DIR}/pam/pam_faillock.so"
+        export ZONEINFO_DIR="${WORK_DIR}/zoneinfo"
         # shellcheck disable=SC1091
         source lib/common.sh
         if ! detect_os > /dev/null 2>&1; then
@@ -290,6 +301,7 @@ run_driver() {
 }
 
 mac_fixture
+zone_fixture
 
 echo "== Debian 12 (systemd, ufw active) =="
 STUB="$(new_stub_dir debian)"
@@ -458,7 +470,7 @@ new_stub "${STUB}" chkconfig 'exit 0'
 rpm_pkg_stubs "${STUB}"
 C7S_OUT="$(run_driver "${WORK_DIR}/centos7sysv.release" "${STUB}" sysv)"
 assert_has "runs the SysV path on EL7" "${C7S_OUT}" "init=sysv"
-assert_has "links the zone instead of calling timedatectl" "${C7S_OUT}" "ln -sf /usr/share/zoneinfo/UTC /etc/localtime"
+assert_has "links the zone instead of calling timedatectl" "${C7S_OUT}" "ln -sf ${WORK_DIR}/zoneinfo/UTC /etc/localtime"
 assert_lacks "never calls timedatectl without systemd" "${C7S_OUT}" "timedatectl set-timezone"
 assert_has "writes locale.conf directly" "${C7S_OUT}" "-> /etc/locale.conf (mode 0644)"
 assert_has "starts yum-cron with service" "${C7S_OUT}" "service yum-cron start"

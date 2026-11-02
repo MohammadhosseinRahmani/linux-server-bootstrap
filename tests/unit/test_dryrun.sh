@@ -55,6 +55,12 @@ export BACKUP_ROOT="${WORK_DIR}/backups"
 export STATE_DIR="${WORK_DIR}/state"
 export LOG_FILE="${WORK_DIR}/test.log"
 export SSH_PORT=2222
+# The stages refuse to plan for a host with no service manager, which is what a
+# container reports, so the pass describes the sysv path instead: the answer is the
+# same on every runner, and it needs no binary present because the dry run intercepts
+# every command that would have used one. The systemd path is covered by the driver
+# matrix and by the same stages running on a real VM.
+export INIT_SYSTEM=sysv
 
 echo "== firewall stage dry-run through the driver =="
 BACKEND="$(cd "${PROJECT_DIR}" && bash -c '
