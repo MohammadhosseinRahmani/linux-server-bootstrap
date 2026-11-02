@@ -56,8 +56,11 @@ jobs:
             | xargs -0 -n1 bash -n
 
   # Every image runs the same ci/selfcheck.sh the project's README tells an
-  # operator to run by hand, so a green check here means the same thing as a
-  # green check on their server.
+  # operator to run by hand, so the gates are the same ones. What an image can
+  # answer for is narrower: it has no sshd or firewall daemon to talk to, and
+  # often no service manager at all, so the pass leaves the daemon stages out
+  # and describes a sysv host where the image reports none. ci/README.md's
+  # "Container versus host" table lists what only a VM proves.
   #
   # EL7 is deliberately absent: its yum mirrors are retired, so a job that
   # cannot install git proves nothing. EL7 bash 4.2 and authconfig are covered

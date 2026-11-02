@@ -2,7 +2,8 @@
 
 One script does all the checking: `ci/selfcheck.sh`. GitHub Actions runs it inside
 each image, and an operator runs the same command on the server before and after a
-change. A green run here means the same thing as a green run on their host.
+change. The script is the same everywhere; what an image can prove is not, so
+"Container versus host" below says which gates a container leaves to a VM.
 
 ```bash
 sudo bash ci/selfcheck.sh                      # default: expects the debian driver
@@ -30,9 +31,33 @@ host before and after anyway: a passing self-check must never leave a mark. The
 passed, because a container or WSL instance usually has no daemon to talk to and a
 refused prerequisite is the correct behaviour there, not a failure.
 
+A host with no service manager at all gets the same treatment one level up: several
+stages refuse to plan when they cannot find a way to start a daemon, which is what a
+container reports, so the orchestrator pass describes a sysv host there and prints
+that it did. The plan is still the product's; only the answer to "what starts this
+service" is borrowed.
+
 `--expect-driver` exists because an image that silently loads the wrong driver would
 still print a passing dry run. The check compares the driver named by `detect_os`
 with the one the matrix row claims to be testing.
+
+## Container versus host
+
+| | Container image | VM or WSL instance |
+| --- | --- | --- |
+| driver and package paths | yes | yes |
+| plan of every stage, `--dry-run` | yes, sysv where the image has no init | yes, with the host's own service manager |
+| stage that talks to `sshd`, `ufw`, `fail2ban` | no (`--with-daemons` is not passed) | yes |
+| timezone and locale actually generated | only after the driver installs `tzdata` / `locales` | already installed on a normal image |
+| unit suite | yes, and it is pinned so the image's missing tools cannot change a result | yes |
+| applied baseline and rollback | no | `tests/live_check.sh` |
+
+A minimal image may not ship the timezone database or the `locales` package, so the
+driver installs what it needs instead of refusing the operator's request; in a dry run
+it says the install was simulated rather than pretending the zone was checked. The unit
+suites do not depend on any of that: they pin `INIT_SYSTEM`, an `os-release` fixture and
+`ZONEINFO_DIR`, and stub the binaries the pinned family owns, so the same commit gives
+the same 361 checks on every runner.
 
 ## The workflow
 
@@ -52,10 +77,9 @@ install git proves nothing. EL7 is covered locally instead, below.
 
 ## Local matrix
 
-A container is not a host. `systemd` may be absent, PAM stacks differ, and a stage
-that talks to a real `sshd` or `firewalld` needs a machine that has them. Before a
-release, run the self-check on a real or semi-real instance of each family, ideally
-with `--with-daemons`:
+The table above lists what a container leaves unproven. Before a release, run the
+self-check on a real or semi-real instance of each family, ideally with
+`--with-daemons`:
 
 | Case | Image | What only this case proves |
 | --- | --- | --- |
@@ -74,15 +98,20 @@ loop that builds a list should be run on a 4.2 shell.
 
 Each row is `ci/selfcheck.sh --expect-driver <family>` and the same command with
 `--with-daemons`, run inside the distro's own filesystem. `dry_actions` is the number
-of host commands the plan intercepted instead of running.
+of host commands the plan intercepted instead of running. The suite counts are the
+pinned-fixture ones, so they match on every row.
 
 | Instance | Family | Driver | Init | bash | Unit checks | Dry-run stages | Result |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| Ubuntu 26.04 | debian | debian | systemd | 5.3 | 338 | 9 then 11 | pass |
-| Debian 13 | debian | debian | systemd | 5.2 | 338 | 9 then 11 | pass |
-| AlmaLinux 8 | rhel | rhel | systemd | 4.4 | 338 | 9 then 11 | pass |
-| Oracle Linux 7.9 | rhel | rhel | sysv | 4.2 | 338 | 9 then 11 | pass |
-| openSUSE Leap 16.0 | suse | suse | systemd | 5.2 | 338 | 9 then 11 | pass |
+| Ubuntu 26.04 | debian | debian | systemd | 5.3 | 361 | 9 then 11 | pass |
+| Debian 13 | debian | debian | systemd | 5.2 | 361 | 9 then 11 | pass |
+| AlmaLinux 8 | rhel | rhel | systemd | 4.4 | 361 | 9 then 11 | pass |
+| Oracle Linux 7.9 | rhel | rhel | sysv | 4.2 | 361 | 9 then 11 | pass |
+| openSUSE Leap 16.0 | suse | suse | systemd | 5.2 | 361 | 9 then 11 | pass |
+
+The same five instances also run with `INIT_SYSTEM=none` in the environment, which is
+how the container case is reproduced without a container: the orchestrator pass plans
+for a sysv host and the suite still reports 361 checks.
 
 EL7 supplied two findings no other row could: `${key//./\/}` keeps the backslash on
 4.2, which made every `/proc/sys` path unreadable and the kernel template look empty,
