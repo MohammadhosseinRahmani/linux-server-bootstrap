@@ -203,6 +203,12 @@ zone_fixture() {
     printf 'CET-1\n' > "${WORK_DIR}/zoneinfo/Europe/Berlin"
 }
 
+# Some plans depend on whether a host has a tool at all, and a stub directory can only
+# add one: the runner's own binaries stay reachable underneath it, so an image that
+# ships authselect would answer for the CentOS 7 case being described. A case says what
+# its host does not have with this, and os_has_command reports it missing.
+absent_commands() { export ABSENT_COMMANDS="$*"; }
+
 # aa-status reports an enabled AppArmor and getenforce a permissive SELinux. Both
 # audit loaders exist, so the transcript shows which one the driver prefers. A
 # case that needs a different answer installs its own stub first: these are
@@ -388,7 +394,7 @@ firewalld_cli_stub "${STUB}"
 new_stub "${STUB}" update-crypto-policies 'exit 0'
 make_systemd_stubs "${STUB}"
 rpm_pkg_stubs "${STUB}"
-R9_OUT="$(run_driver "${WORK_DIR}/rhel9.release" "${STUB}" systemd)"
+R9_OUT="$(absent_commands authselect authconfig; run_driver "${WORK_DIR}/rhel9.release" "${STUB}" systemd)"
 assert_has "selects the rhel driver" "${R9_OUT}" "driver=rhel id=rhel version=9.4"
 assert_has "uses firewalld" "${R9_OUT}" "fw_backend=firewalld"
 assert_has "installs firewalld" "${R9_OUT}" "install -y firewalld"
@@ -451,7 +457,7 @@ firewalld_cli_stub "${STUB}"
 make_systemd_stubs "${STUB}"
 rpm_pkg_stubs "${STUB}"
 new_stub "${STUB}" authconfig 'exit 0'
-C7AC_OUT="$(run_driver "${WORK_DIR}/centos7ac.release" "${STUB}" systemd)"
+C7AC_OUT="$(absent_commands authselect; run_driver "${WORK_DIR}/centos7ac.release" "${STUB}" systemd)"
 assert_has "enables faillock through authconfig" "${C7AC_OUT}" "[dry-run] authconfig --enablefaillock"
 assert_has "passes the requested thresholds" "${C7AC_OUT}" "--faillockargs=deny=4 unlock_time=600"
 assert_has "updates the stacks in one step" "${C7AC_OUT}" "--update"
@@ -468,7 +474,7 @@ firewalld_cli_stub "${STUB}"
 new_stub "${STUB}" service 'exit 0'
 new_stub "${STUB}" chkconfig 'exit 0'
 rpm_pkg_stubs "${STUB}"
-C7S_OUT="$(run_driver "${WORK_DIR}/centos7sysv.release" "${STUB}" sysv)"
+C7S_OUT="$(absent_commands authselect; run_driver "${WORK_DIR}/centos7sysv.release" "${STUB}" sysv)"
 assert_has "runs the SysV path on EL7" "${C7S_OUT}" "init=sysv"
 assert_has "links the zone instead of calling timedatectl" "${C7S_OUT}" "ln -sf ${WORK_DIR}/zoneinfo/UTC /etc/localtime"
 assert_lacks "never calls timedatectl without systemd" "${C7S_OUT}" "timedatectl set-timezone"
@@ -486,7 +492,7 @@ exit 1'
 firewalld_cli_stub "${STUB}"
 make_systemd_stopped "${STUB}"
 rpm_pkg_stubs "${STUB}"
-C7_OUT="$(run_driver "${WORK_DIR}/centos7.release" "${STUB}" systemd de_DE.UTF-8)"
+C7_OUT="$(absent_commands authselect; run_driver "${WORK_DIR}/centos7.release" "${STUB}" systemd de_DE.UTF-8)"
 assert_has "maps centos to the rhel family" "${C7_OUT}" "driver=rhel id=centos version=7"
 assert_has "edits the permanent store offline" "${C7_OUT}" "firewall-offline-cmd --add-port=2222/tcp"
 assert_lacks "does not reload a stopped daemon" "${C7_OUT}" "firewall-cmd --reload"

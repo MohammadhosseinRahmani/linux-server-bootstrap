@@ -88,8 +88,15 @@ os_pick_family() {
 
 # The command lookup is a function so a test can describe a host that has only yum
 # without editing the runner's PATH, which on an RPM machine also holds awk and grep.
+# ABSENT_COMMANDS is the other half of that description: a stub directory can put a
+# tool in front of PATH, but nothing in PATH can hide the one the runner really has,
+# so a case that means "an image without authselect" says so here.
 os_has_command() {
-    command -v "$1" >/dev/null 2>&1
+    local name="$1"
+    case " ${ABSENT_COMMANDS:-} " in
+        *" ${name} "*) return 1 ;;
+    esac
+    command -v "${name}" >/dev/null 2>&1
 }
 
 # The package manager a stage installs with. Debian and SUSE have one answer; the

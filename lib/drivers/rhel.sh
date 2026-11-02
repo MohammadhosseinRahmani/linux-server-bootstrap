@@ -197,7 +197,7 @@ drv_lockout_apply() {
 
     faillock_conf_write "${deny}" "${fail_interval}" "${unlock_time}" || return 1
 
-    if command -v authselect >/dev/null 2>&1; then
+    if os_has_command authselect; then
         local profile
         profile="$(authselect current 2>/dev/null | awk '/Profile ID:/ { print $3; exit }')"
         if [[ -n "${profile}" ]] \
@@ -207,7 +207,7 @@ drv_lockout_apply() {
             return 0
         fi
         warn "The authselect profile ${profile:-unknown} has no with-faillock feature, so the stacks are edited directly."
-    elif command -v authconfig >/dev/null 2>&1; then
+    elif os_has_command authconfig; then
         info "Enabling faillock through authconfig."
         run_cmd authconfig --enablefaillock \
             --faillockargs="deny=${deny} unlock_time=${unlock_time}" --update
