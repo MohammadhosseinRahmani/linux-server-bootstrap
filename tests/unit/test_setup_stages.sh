@@ -20,6 +20,12 @@ export DRY_RUN=1
 export BACKUP_ROOT="${SANDBOX}/backups"
 export STATE_DIR="${SANDBOX}/state"
 export LOG_FILE="${SANDBOX}/test.log"
+# base.sh will not plan for a host that has no way to start a daemon, and a container
+# reports exactly that, so the refusals asserted below would be about the runner rather
+# than about the argument under test. The sysv path needs no binary here because the
+# dry run intercepts every command that would have used one; the case that wants
+# systemd says so itself and stubs the tool.
+export INIT_SYSTEM=sysv
 
 TESTS_RUN=0
 TESTS_FAILED=0
