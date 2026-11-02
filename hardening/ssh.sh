@@ -220,8 +220,14 @@ install_managed_block() {
 
 configure_socket_port() {
     # Returns 0 when the driver moved the port into a socket unit.
-    local dropin
-    if dropin="$(drv_ssh_socket_setup "${SSH_PORT}")"; then
+    # The driver prints what it did, so the output is captured and repeated here:
+    # showing it is the reason for the capture, and discarding it silently removed the
+    # socket lines from a --dry-run transcript.
+    local report
+    if report="$(drv_ssh_socket_setup "${SSH_PORT}")"; then
+        if [[ -n "${report}" ]]; then
+            printf '%s\n' "${report}"
+        fi
         if dry_run; then
             return 0
         fi

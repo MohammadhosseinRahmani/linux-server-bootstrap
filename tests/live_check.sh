@@ -66,6 +66,8 @@ fi
 
 SANDBOX="$(mktemp -d)"
 trap 'rm -rf -- "${SANDBOX}"' EXIT
+# The sourced library writes its log here; nothing in this file reads it back.
+# shellcheck disable=SC2034
 LOG_FILE="${SANDBOX}/live.log"
 
 # A short list, sampled with the same command before and after, so a difference means
@@ -105,9 +107,11 @@ fingerprint() {
         if [[ -d "${path}" ]]; then
             # Directory contents matter as much as the directory itself.
             find "${path}" -maxdepth 1 -type f -printf '%p %m %s\n' 2>/dev/null | LC_ALL=C sort
-            printf '%s DIR %m\n' "${path}"
+            printf '%s DIR %s\n' "${path}" "$(stat -c '%a' "${path}")"
         else
-            printf '%s %m %s\n' "${path}" "$(stat -c '%u:%g' "${path}")"
+            # Mode and owner, because a stage that only chowns must still show up here.
+            printf '%s %s %s\n' "${path}" \
+                "$(stat -c '%a' "${path}")" "$(stat -c '%u:%g' "${path}")"
         fi
     done
 }
