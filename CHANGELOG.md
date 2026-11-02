@@ -4,7 +4,7 @@ Notable changes for this project. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the versions follow
 [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.0.0] — unreleased
+## [1.0.0] — 2026-11-02
 
 The first release that describes itself as a baseline rather than a set of SSH
 scripts. Everything below was added or fixed on the way from the original SSH,
