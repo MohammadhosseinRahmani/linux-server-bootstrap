@@ -433,7 +433,16 @@ run_stage() {
     fi
 
     info "Starting ${STAGE_TITLE[${name}]}..."
-    bash "${SCRIPT_DIR}/${STAGE_SCRIPT[${name}]}" "${full[@]}"
+    # The status has to be taken from the stage itself. This function only ever runs
+    # inside `if ! run_stage ...`, and bash suspends errexit for the whole condition,
+    # so a failing stage neither stops the function nor sets its status: the success
+    # line below would, and the run would report every stage as finished.
+    local stage_rc=0
+    bash "${SCRIPT_DIR}/${STAGE_SCRIPT[${name}]}" "${full[@]}" || stage_rc=$?
+    if [[ "${stage_rc}" -ne 0 ]]; then
+        error "${STAGE_TITLE[${name}]} exited ${stage_rc}."
+        return "${stage_rc}"
+    fi
     success "${STAGE_TITLE[${name}]} finished."
 }
 

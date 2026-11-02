@@ -190,6 +190,32 @@ assert_has "the account reaches the ssh stub" "${STAGE_LINES}" "STAGE ssh --yes 
 assert_lacks "the verifier was not run for a plan-only pass" "${BOOT_OUT}" "STAGE verify"
 
 echo
+echo "== a stage that fails stops the run =="
+# Bash suspends errexit for the whole of an `if !` condition, so a run_stage that
+# left the failing stage's status to errexit printed "finished" for a stage that
+# exited non-zero, and bootstrap reported success with broken stages. The stub is
+# replaced in a second copy of the sandbox so the plan tests below still see the
+# working set.
+FAIL_DIR="${WORK_DIR}/orchestrator-fail"
+mkdir -p "${FAIL_DIR}"
+cp -a "${BOOT_DIR}/lib" "${BOOT_DIR}/bootstrap.sh" "${BOOT_DIR}/hardening" \
+    "${BOOT_DIR}/setup" "${BOOT_DIR}/tests" "${FAIL_DIR}/"
+printf '#!/usr/bin/env bash\necho "STAGE sysctl $*"\nexit 3\n' \
+    > "${FAIL_DIR}/hardening/sysctl.sh"
+FAIL_OUT="$(cd "${FAIL_DIR}" && bash bootstrap.sh --user testadmin --yes --dry-run 2>&1)"
+FAIL_RC=$?
+TESTS_RUN=$((TESTS_RUN + 1))
+if [[ "${FAIL_RC}" -ne 0 ]]; then
+    ok "the orchestrator exits non-zero when a stage does (rc=${FAIL_RC})"
+else
+    nok "a run with a failing stage should not report success"
+    printf '%s\n' "${FAIL_OUT}" | tail -25 | sed 's/^/        out: /'
+fi
+assert_has "the failing stage is named with its own status" "${FAIL_OUT}" "kernel parameters exited 3."
+assert_has "the run says it stopped" "${FAIL_OUT}" "The run stopped."
+assert_lacks "a stage after the failure was not attempted" "${FAIL_OUT}" "STAGE limits"
+
+echo
 echo "== --only and --skip narrow the plan =="
 ONLY_OUT="$(cd "${BOOT_DIR}" && bash bootstrap.sh --only base,users --hostname srv1 --new-user bob --sudo --yes --dry-run 2>&1)"
 ONLY_LINES="$(printf '%s\n' "${ONLY_OUT}" | grep -F 'STAGE ' || true)"
