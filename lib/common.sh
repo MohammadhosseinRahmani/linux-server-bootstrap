@@ -91,6 +91,7 @@ LOG_FILE="${LOG_FILE:-/var/log/linux-server-bootstrap.log}"
     PWQUALITY_CONF="${PWQUALITY_CONF:-/etc/security/pwquality.conf}"
     SELINUX_CONFIG="${SELINUX_CONFIG:-/etc/selinux/config}"
     APPARMOR_PROFILE_DIR="${APPARMOR_PROFILE_DIR:-/etc/apparmor.d}"
+    ZONEINFO_DIR="${ZONEINFO_DIR:-/usr/share/zoneinfo}"
 }
 
 # Prints "group mode" for the shadow-family files on this host. The stage that
@@ -104,6 +105,39 @@ shadow_ownership() {
     else
         printf 'root 0600\n'
     fi
+}
+
+# The zone database is a package, not a guarantee: a slim image can ship without
+# it, and then every name an operator asks for looks unknown. Install what
+# provides the tree before refusing the request.
+timezone_is_supported() {
+    local zone="$1"
+    if [[ -f "${ZONEINFO_DIR}/${zone}" ]]; then
+        return 0
+    fi
+    if [[ ! -d "${ZONEINFO_DIR}" ]]; then
+        # With no database there is nothing to look the name up in, so a dry run
+        # cannot tell a valid zone from a typo. It says what a real run would do
+        # instead of pretending the answer is already known.
+        if dry_run; then
+            warn "Dry run: this host has no timezone database, so $(drv_tzdata_pkg) would be installed and ${zone} validated after it."
+            return 0
+        fi
+        info "This host has no timezone database. Installing $(drv_tzdata_pkg)."
+        if ! drv_pkg_install "$(drv_tzdata_pkg)"; then
+            error "${zone} cannot be checked: the timezone database is missing and $(drv_tzdata_pkg) did not install."
+            return 1
+        fi
+    fi
+    if [[ ! -f "${ZONEINFO_DIR}/${zone}" ]]; then
+        if [[ -d "${ZONEINFO_DIR}" ]]; then
+            error "Unknown timezone: ${zone}. It is not in this host's timezone database."
+        else
+            error "Unknown timezone: ${zone}. This host has no timezone database."
+        fi
+        return 1
+    fi
+    return 0
 }
 
 # glibc's locale -a writes en_US.utf8 while /etc/locale.conf writes en_US.UTF-8,

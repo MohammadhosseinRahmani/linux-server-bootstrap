@@ -46,16 +46,18 @@ drv_f2b_prepare_repo() {
     return 0
 }
 
+drv_tzdata_pkg() {
+    # SUSE ships the zone database as its own package, not inside glibc.
+    printf 'timezone\n'
+}
+
 drv_timezone_apply() {
     local zone="$1"
-    if [[ ! -f "/usr/share/zoneinfo/${zone}" ]]; then
-        error "Unknown timezone: ${zone}"
-        return 1
-    fi
+    timezone_is_supported "${zone}" || return 1
     if [[ "${INIT_SYSTEM}" == "systemd" ]] && command -v timedatectl >/dev/null 2>&1; then
         run_cmd timedatectl set-timezone "${zone}"
     else
-        run_cmd ln -sf "/usr/share/zoneinfo/${zone}" /etc/localtime
+        run_cmd ln -sf "${ZONEINFO_DIR}/${zone}" /etc/localtime
     fi
     # SUSE keeps its own copy of the zone, and the boot scripts read it.
     local tmp

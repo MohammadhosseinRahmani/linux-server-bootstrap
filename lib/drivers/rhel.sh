@@ -97,17 +97,18 @@ drv_mac_enforce() {
     mac_enforce_selinux
 }
 
+drv_tzdata_pkg() {
+    printf 'tzdata\n'
+}
+
 drv_timezone_apply() {
     local zone="$1"
-    if [[ ! -f "/usr/share/zoneinfo/${zone}" ]]; then
-        error "Unknown timezone: ${zone}"
-        return 1
-    fi
+    timezone_is_supported "${zone}" || return 1
     if [[ "${INIT_SYSTEM}" == "systemd" ]] && command -v timedatectl >/dev/null 2>&1; then
         run_cmd timedatectl set-timezone "${zone}"
         return 0
     fi
-    run_cmd ln -sf "/usr/share/zoneinfo/${zone}" /etc/localtime
+    run_cmd ln -sf "${ZONEINFO_DIR}/${zone}" /etc/localtime
 }
 
 drv_locale_apply() {

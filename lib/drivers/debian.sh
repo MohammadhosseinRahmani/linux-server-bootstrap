@@ -189,12 +189,13 @@ drv_f2b_prepare_repo() {
     return 0
 }
 
+drv_tzdata_pkg() {
+    printf 'tzdata\n'
+}
+
 drv_timezone_apply() {
     local zone="$1"
-    if [[ ! -f "/usr/share/zoneinfo/${zone}" ]]; then
-        error "Unknown timezone: ${zone}"
-        return 1
-    fi
+    timezone_is_supported "${zone}" || return 1
     local tmp
     tmp="$(mktemp)"
     printf '%s\n' "${zone}" > "${tmp}"
@@ -207,8 +208,20 @@ drv_timezone_apply() {
 drv_locale_apply() {
     local locale="$1"
     if ! command -v locale-gen >/dev/null 2>&1; then
-        error "locale-gen is missing. Install the locales package (apt install locales)."
-        return 1
+        # locale-gen belongs to the locales package and a slim image can ship
+        # without it, so a missing one is an install and not an unusable host.
+        if ! drv_pkg_install locales; then
+            error "The locales package did not install, so ${locale} cannot be generated."
+            return 1
+        fi
+        if ! command -v locale-gen >/dev/null 2>&1; then
+            if dry_run; then
+                warn "Dry run: the install was simulated, so ${locale} is not generated on this host yet."
+                return 0
+            fi
+            error "The locales package is installed but locale-gen is still absent."
+            return 1
+        fi
     fi
     if ! locale -a 2>/dev/null | grep -Fxq "${locale}"; then
         info "Generating ${locale}..."

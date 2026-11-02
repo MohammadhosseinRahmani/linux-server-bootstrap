@@ -223,6 +223,123 @@ STATE_READ="$(
 assert_has "state_value reads a saved key" "${STATE_READ}" "C.UTF-8"
 
 echo
+echo "== a zone name is only unknown until the database is looked at =="
+# A minimal image can ship without the timezone package, and then /usr/share/zoneinfo
+# holds nothing: every name an operator asks for, valid or not, reads as unknown. The
+# check installs the package before refusing, and says what it cannot know in a dry run.
+mkdir -p "${SANDBOX}/tzbin"
+printf '#!/bin/sh\nexit 0\n' > "${SANDBOX}/tzbin/apt"
+chmod +x "${SANDBOX}/tzbin/apt"
+# The stub stands in for the package: it lays down the tree the driver then reads, so
+# a successful install and a failed one are two different fixtures rather than two
+# different hosts.
+printf '#!/bin/sh\nif [ "${TZ_INSTALL_RC:-0}" -ne 0 ]; then exit "${TZ_INSTALL_RC}"; fi\n' > "${SANDBOX}/tzbin/apt-get"
+printf 'mkdir -p "${TZ_INSTALL_DIR}" && printf x > "${TZ_INSTALL_DIR}/UTC"\n' >> "${SANDBOX}/tzbin/apt-get"
+printf 'exit 0\n' >> "${SANDBOX}/tzbin/apt-get"
+chmod +x "${SANDBOX}/tzbin/apt-get"
+
+# tz_probe <dry-run> <install-rc> <zoneinfo dir> <zone>
+# Prints what the check reported and returns its exit status.
+tz_probe() {
+    (
+        cd "${PROJECT_DIR}" || exit 1
+        export PATH="${SANDBOX}/tzbin:${PATH}"
+        export DRY_RUN="$1"
+        export TZ_INSTALL_RC="$2"
+        export TZ_INSTALL_DIR="$3"
+        export BACKUP_ROOT="${SANDBOX}/tz-backups"
+        export STATE_DIR="${SANDBOX}/tz-state"
+        export LOG_FILE="${SANDBOX}/tz.log"
+        export OS_RELEASE_FILE="${SANDBOX}/os-release.debian"
+        export ZONEINFO_DIR="$3"
+        # shellcheck disable=SC1091
+        source lib/common.sh
+        detect_os > /dev/null 2>&1
+        timezone_is_supported "$4"
+    ) 2>&1
+}
+
+TZ_MISSING="${WORK_DIR}/tz-missing"
+TZ_TYPO="${WORK_DIR}/tz-typo"
+mkdir -p "${TZ_TYPO}/Europe"
+printf 'x' > "${TZ_TYPO}/Europe/Berlin"
+TZ_OK_DIR="${WORK_DIR}/tz-ok"
+mkdir -p "${TZ_OK_DIR}"
+printf 'x' > "${TZ_OK_DIR}/UTC"
+
+TZ_OUT="$(tz_probe 1 0 "${TZ_OK_DIR}" UTC)"
+assert_rc "a zone in the database is accepted" 0 "$?"
+assert_lacks "a readable database needs no comment" "${TZ_OUT}" "timezone database"
+
+TZ_OUT="$(tz_probe 1 0 "${TZ_TYPO}" 'Not/AZone')"
+assert_rc "a name that is not in the database is refused" 1 "$?"
+assert_has "and says the database has no such zone" "${TZ_OUT}" "It is not in this host's timezone database"
+
+TZ_OUT="$(tz_probe 1 0 "${TZ_MISSING}" UTC)"
+assert_rc "a dry run without a database plans the install" 0 "$?"
+assert_has "and names the package it would install" "${TZ_OUT}" "tzdata"
+
+TZ_OUT="$(tz_probe 0 0 "${TZ_MISSING}" UTC)"
+assert_rc "a real run installs the database and accepts the zone" 0 "$?"
+assert_has "and says it is installing" "${TZ_OUT}" "Installing tzdata"
+
+TZ_OUT="$(tz_probe 0 1 "${WORK_DIR}/tz-broken" UTC)"
+assert_rc "a failed install is an error, not a silent unknown" 1 "$?"
+assert_has "and names the package that failed" "${TZ_OUT}" "did not install"
+
+echo
+echo "== a locale tool the image forgot to ship =="
+# The same reasoning as above, for the other half of the clock: locale-gen lives in
+# the locales package, a slim Debian image has no locales package, and refusing to
+# plan a locale on such a host makes the dry run useless on exactly the images a
+# operator is most likely to start from.
+mkdir -p "${SANDBOX}/locbin"
+printf '#!/bin/sh\nexit 0\n' > "${SANDBOX}/locbin/apt"
+printf '#!/bin/sh\nexit 0\n' > "${SANDBOX}/locbin/update-locale"
+# The apt-get stub stands in for the locales package by putting the real command
+# onto the PATH the driver searches again right afterwards.
+printf '#!/bin/sh\nif [ "${LOCALES_INSTALL_RC:-0}" -ne 0 ]; then exit "${LOCALES_INSTALL_RC}"; fi\n' > "${SANDBOX}/locbin/apt-get"
+printf 'printf "#!/bin/sh\\nexit 0\\n" > "${LOCALES_STUB_DIR}/locale-gen"\n' >> "${SANDBOX}/locbin/apt-get"
+printf 'chmod +x "${LOCALES_STUB_DIR}/locale-gen"\nexit 0\n' >> "${SANDBOX}/locbin/apt-get"
+printf '#!/bin/sh\nexit 0\n' >> "${SANDBOX}/locbin/apt-get"
+chmod +x "${SANDBOX}/locbin/apt" "${SANDBOX}/locbin/apt-get" "${SANDBOX}/locbin/update-locale"
+
+# locale_probe <dry-run> <install-rc>: calls the Debian driver with no locale-gen
+# on PATH at first.
+locale_probe() {
+    local probe_dir="${WORK_DIR}/loc-$1-$2"
+    mkdir -p "${probe_dir}"
+    (
+        cd "${PROJECT_DIR}" || exit 1
+        export PATH="${probe_dir}:${SANDBOX}/locbin:/usr/bin:/bin"
+        export DRY_RUN="$1"
+        export LOCALES_INSTALL_RC="$2"
+        export LOCALES_STUB_DIR="${probe_dir}"
+        export BACKUP_ROOT="${SANDBOX}/loc-backups"
+        export STATE_DIR="${SANDBOX}/loc-state"
+        export LOG_FILE="${SANDBOX}/loc.log"
+        export OS_RELEASE_FILE="${SANDBOX}/os-release.debian"
+        # shellcheck disable=SC1091
+        source lib/common.sh
+        detect_os > /dev/null 2>&1
+        drv_locale_apply C.UTF-8
+    ) 2>&1
+}
+
+LOC_OUT="$(locale_probe 1 0)"
+assert_rc "a dry run plans the install instead of refusing" 0 "$?"
+assert_has "and says the install was simulated" "${LOC_OUT}" "the install was simulated"
+assert_has "and names the package" "${LOC_OUT}" "locales"
+
+LOC_OUT="$(locale_probe 0 0)"
+assert_rc "a real run gets the tool and generates the locale" 0 "$?"
+assert_lacks "and reports no error" "${LOC_OUT}" "[ERROR]"
+
+LOC_OUT="$(locale_probe 0 1)"
+assert_rc "a failed install is reported as one" 1 "$?"
+assert_has "and names what could not be installed" "${LOC_OUT}" "The locales package did not install"
+
+echo
 echo "Ran ${TESTS_RUN} checks, ${TESTS_FAILED} failed."
 if [[ "${TESTS_FAILED}" -gt 0 ]]; then
     exit 1

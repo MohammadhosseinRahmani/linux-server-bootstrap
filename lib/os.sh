@@ -41,7 +41,7 @@ DRIVER_CONTRACT=(
     drv_sysctl_dir drv_sysctl_file drv_audit_pkg
     drv_audit_rules_file drv_audit_apply drv_legacy_services
     drv_timesync_pkg drv_timesync_unit
-    drv_timezone_apply drv_timezone_file
+    drv_timezone_apply drv_timezone_file drv_tzdata_pkg
     drv_locale_apply drv_locale_files
     drv_lockout_files drv_lockout_apply drv_pwquality_pkg
     drv_unattended_setup drv_crypto_policy
