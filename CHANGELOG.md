@@ -4,6 +4,51 @@ Notable changes for this project. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the versions follow
 [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.1] — 2026-11-03
+
+What the release checks found when they ran on their own images: what a failed stage
+does to a run, and which questions a container is allowed to answer for a host.
+
+### Added
+
+- `drv_tzdata_pkg` in the driver contract — `tzdata` on Debian and RPM hosts,
+  `timezone` on SUSE, where the zone database is its own package.
+- `ABSENT_COMMANDS`, read by `os_has_command`, so a driver case can describe a host
+  that does *not* have a tool. A stub directory can only add to `PATH`; the runner's
+  own binaries stay reachable underneath it.
+- `LOCALTIME_FILE` and `TIMEZONE_NAME_FILE`, the two paths `timezone_is_current`
+  reads, overridable like everything else a check redirects.
+- A regression test that a stage exiting non-zero stops the orchestrator, names the
+  stage with its own status, and leaves the following stage alone.
+
+### Changed
+
+- A host that ships no timezone database or no `locales` package gets them installed
+  instead of getting a refusal. In a dry run the driver says the install was
+  simulated rather than pretending it checked the zone.
+- The unit suites describe their host instead of borrowing the runner's: an
+  `os-release` fixture, `INIT_SYSTEM`, `ZONEINFO_DIR`, the two clock paths, and stubs
+  for the binaries the pinned family owns, `systemctl` among them. The same commit now
+  reports the same 361 checks on a VM and inside a minimal container.
+- `ci/selfcheck.sh` plans for a sysv host when the runner reports no service manager,
+  names the suite that failed and repeats its first failure with the output that
+  caused it, and compares the host fingerprint with `grep` rather than `diff` — EL
+  images ship no diffutils, and a missing comparison tool was reporting an empty
+  difference as if it had proved something.
+- `--source-path=SCRIPTDIR` for shellcheck, so the library a stage sources resolves
+  and a misspelled variable is still an error; the four switched-off codes are named
+  in the workflow with the reason.
+- The CI images no longer install `curl`: EL9 ships `curl-minimal`, which conflicts
+  with `curl` rather than being replaced by it.
+
+### Fixed
+
+- **A stage that failed did not stop the run, and the run reported success.**
+  `run_stage` is only called as `if ! run_stage ...`, and bash suspends errexit for
+  the whole of a condition, so the child's non-zero status neither stopped the
+  function nor set its return: the `success` line underneath ran anyway. Operators
+  saw "finished" for every stage and exit 0 for a pass that had failed three of them.
+
 ## [1.0.0] — 2026-11-02
 
 The first release that describes itself as a baseline rather than a set of SSH
