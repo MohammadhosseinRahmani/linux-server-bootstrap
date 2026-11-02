@@ -315,12 +315,14 @@ EOF
 
     arm_rollback
 
+    local -a sudo_users=()
     for user_name in "${SSH_ALLOW_USERS[@]}"; do
         create_user "${user_name}" || return 1
         apply_groups "${user_name}"
         install_keys "${user_name}"
         if [[ "${GRANT_SUDO}" -eq 1 ]]; then
             grant_sudo "${user_name}" || return 1
+            sudo_users+=("${user_name}")
         fi
     done
 
@@ -331,6 +333,11 @@ EOF
     fi
 
     state_set ADMIN_USERS "${SSH_ALLOW_USERS[*]}"
+    # Only the accounts this pass actually got a sudoers file for, so the verifier
+    # does not report a missing drop-in for a run that never passed --sudo.
+    if [[ "${#sudo_users[@]}" -gt 0 ]]; then
+        state_set SUDO_USERS "${sudo_users[*]}"
+    fi
     save_state
     disarm_rollback
     success "User setup completed."

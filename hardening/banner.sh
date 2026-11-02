@@ -15,7 +15,6 @@ source "${SCRIPT_DIR}/../lib/common.sh"
 
 BANNER_SOURCE="${PROJECT_DIR}/config/banner.txt"
 BANNER_FILES=("/etc/issue" "/etc/issue.net")
-SSH_BANNER_TARGET="${SSH_BANNER_TARGET:-${SSH_CONFIG_DIR}/10-linux-server-bootstrap-banner.conf}"
 BANNER_HOSTNAME=""
 
 usage() {

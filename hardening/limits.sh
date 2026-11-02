@@ -14,8 +14,6 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/../lib/common.sh"
 
 LIMITS_SOURCE="${PROJECT_DIR}/config/limits.conf"
-LIMITS_TARGET="${LIMITS_TARGET:-/etc/security/limits.d/99-linux-server-bootstrap.conf}"
-SYSTEMD_LIMITS_DROPIN="${SYSTEMD_LIMITS_DROPIN:-/etc/systemd/system.conf.d/99-linux-server-bootstrap.conf}"
 CORE_LIMIT="${CORE_LIMIT:-0}"
 MAX_LOGINS="${MAX_LOGINS:-}"
 
@@ -208,6 +206,9 @@ apply_limits() {
     fi
 
     state_set CORE_LIMIT "${CORE_LIMIT}"
+    if [[ -n "${MAX_LOGINS}" ]]; then
+        state_set MAX_LOGINS "${MAX_LOGINS}"
+    fi
     save_state
     disarm_rollback
     success "Login limit hardening completed."

@@ -109,7 +109,7 @@ drv_timezone_apply() {
 
 drv_locale_apply() {
     local locale="$1"
-    if ! locale -a 2>/dev/null | grep -Fxq "${locale}"; then
+    if ! locale_is_available "${locale}"; then
         error "${locale} is not available. Install glibc-langpack-en or generate it with localedef."
         return 1
     fi

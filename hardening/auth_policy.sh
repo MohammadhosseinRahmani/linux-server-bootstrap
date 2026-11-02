@@ -14,12 +14,6 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=../lib/common.sh
 source "${SCRIPT_DIR}/../lib/common.sh"
 
-LOGIN_DEFS_FILE="${LOGIN_DEFS_FILE:-/etc/login.defs}"
-LOGIN_DEFS_BEGIN='# BEGIN linux-server-bootstrap'
-LOGIN_DEFS_END='# END linux-server-bootstrap'
-FAILLOCK_CONF="${FAILLOCK_CONF:-/etc/security/faillock.conf}"
-PWQUALITY_CONF="${PWQUALITY_CONF:-/etc/security/pwquality.conf}"
-
 DENY="${DENY:-3}"
 FAIL_INTERVAL="${FAIL_INTERVAL:-900}"
 UNLOCK_TIME="${UNLOCK_TIME:-900}"
@@ -29,6 +23,7 @@ MIN_DAYS="${MIN_DAYS:-1}"
 WARN_AGE="${WARN_AGE:-7}"
 UMASK="${UMASK:-027}"
 PROBE_USER=""
+LOGIN_DEFS_DONE=0
 LOCKOUT_DONE=0
 PWQUALITY_DONE=0
 
@@ -109,8 +104,11 @@ login_defs_block() {
 
 apply_login_defs() {
     if [[ ! -f "${LOGIN_DEFS_FILE}" ]]; then
-        error "${LOGIN_DEFS_FILE} is missing."
-        return 1
+        # A minimal image can ship without login.defs, and the lockout and
+        # complexity rules below do not depend on it, so this part is skipped
+        # rather than failing the whole policy.
+        warn "${LOGIN_DEFS_FILE} does not exist, so aging and umask were left alone."
+        return 0
     fi
     local tmp
     tmp="$(mktemp)"
@@ -120,6 +118,7 @@ apply_login_defs() {
         return 1
     }
     rm -f -- "${tmp}"
+    LOGIN_DEFS_DONE=1
     success "Updated the managed block in ${LOGIN_DEFS_FILE}"
 }
 
@@ -290,7 +289,11 @@ rollback_component() {
 
 plan_text() {
     printf '%s\n' "Authentication policy will:"
-    printf '%s\n' "  - set aging to ${MAX_DAYS}d max, ${MIN_DAYS}d min, ${WARN_AGE}d warning and umask ${UMASK} in ${LOGIN_DEFS_FILE}"
+    if [[ -f "${LOGIN_DEFS_FILE}" ]]; then
+        printf '%s\n' "  - set aging to ${MAX_DAYS}d max, ${MIN_DAYS}d min, ${WARN_AGE}d warning and umask ${UMASK} in ${LOGIN_DEFS_FILE}"
+    else
+        printf '%s\n' "  - leave aging and umask alone because ${LOGIN_DEFS_FILE} does not exist"
+    fi
     printf '%s\n' "  - lock an account after ${DENY} failures in ${FAIL_INTERVAL}s for ${UNLOCK_TIME}s"
     printf '%s\n' "  - require ${MIN_LENGTH} characters with mixed classes when pam_pwquality is present"
     printf '%s\n' "  - authenticate an existing account afterwards to prove the stack still works"
@@ -325,7 +328,7 @@ apply_auth() {
         return 0
     fi
 
-    if ! verify_login_defs; then
+    if [[ "${LOGIN_DEFS_DONE}" -eq 1 ]] && ! verify_login_defs; then
         error "login.defs was not updated as expected. Restoring the backup."
         rollback_component
         exit 1
@@ -341,8 +344,20 @@ apply_auth() {
         exit 1
     fi
 
-    state_set PASSWORD_MAX_DAYS "${MAX_DAYS}"
     state_set LOCKOUT_DENY "${DENY}"
+    # Recorded only for the parts that really ran, so the verifier is not chasing
+    # a value this pass never wrote.
+    if [[ "${LOGIN_DEFS_DONE}" -eq 1 ]]; then
+        state_set PASSWORD_MAX_DAYS "${MAX_DAYS}"
+        state_set LOGIN_UMASK "${UMASK}"
+    fi
+    if [[ "${LOCKOUT_DONE}" -eq 1 ]]; then
+        state_set LOCKOUT_FAIL_INTERVAL "${FAIL_INTERVAL}"
+        state_set LOCKOUT_UNLOCK_TIME "${UNLOCK_TIME}"
+    fi
+    if [[ "${PWQUALITY_DONE}" -eq 1 ]]; then
+        state_set PASSWORD_MIN_LEN "${MIN_LENGTH}"
+    fi
     save_state
     disarm_rollback
     success "Authentication policy completed."

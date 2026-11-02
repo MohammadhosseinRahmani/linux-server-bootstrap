@@ -72,6 +72,40 @@ SSH_INCLUDE_LINE='Include /etc/ssh/sshd_config.d/*.conf'
 SSH_BLOCK_BEGIN='# BEGIN linux-server-bootstrap'
 SSH_BLOCK_END='# END linux-server-bootstrap'
 JAIL_TARGET="${JAIL_TARGET:-/etc/fail2ban/jail.d/00-linux-server-bootstrap.conf}"
+LIMITS_TARGET="${LIMITS_TARGET:-/etc/security/limits.d/99-linux-server-bootstrap.conf}"
+SYSTEMD_LIMITS_DROPIN="${SYSTEMD_LIMITS_DROPIN:-/etc/systemd/system.conf.d/99-linux-server-bootstrap.conf}"
+SSH_BANNER_TARGET="${SSH_BANNER_TARGET:-${SSH_CONFIG_DIR}/10-linux-server-bootstrap-banner.conf}"
+SUDOERS_DIR="${SUDOERS_DIR:-/etc/sudoers.d}"
+LOGIN_DEFS_FILE="${LOGIN_DEFS_FILE:-/etc/login.defs}"
+LOGIN_DEFS_BEGIN='# BEGIN linux-server-bootstrap'
+LOGIN_DEFS_END='# END linux-server-bootstrap'
+FAILLOCK_CONF="${FAILLOCK_CONF:-/etc/security/faillock.conf}"
+PWQUALITY_CONF="${PWQUALITY_CONF:-/etc/security/pwquality.conf}"
+SELINUX_CONFIG="${SELINUX_CONFIG:-/etc/selinux/config}"
+APPARMOR_PROFILE_DIR="${APPARMOR_PROFILE_DIR:-/etc/apparmor.d}"
+
+# Prints "group mode" for the shadow-family files on this host. The stage that
+# fixes permissions and the verifier that proves it have to agree on the answer,
+# and a distro that keeps /etc/shadow in the shadow group should not be fought
+# over into root:root.
+shadow_ownership() {
+    if getent group shadow >/dev/null 2>&1 \
+        && [[ "$(stat -c '%G' /etc/shadow 2>/dev/null || true)" == "shadow" ]]; then
+        printf 'shadow 0640\n'
+    else
+        printf 'root 0600\n'
+    fi
+}
+
+# glibc's locale -a writes en_US.utf8 while /etc/locale.conf writes en_US.UTF-8,
+# and musl writes a third spelling. The comparison has to ignore case and the
+# dash, or a perfectly valid locale name gets refused as unavailable.
+locale_is_available() {
+    local want have
+    want="$(tr '[:upper:]' '[:lower:]' <<< "$1" | tr -d '-')"
+    have="$(locale -a 2>/dev/null | tr '[:upper:]' '[:lower:]' | tr -d '-')"
+    grep -qxF -- "${want}" <<< "${have}"
+}
 
 # OpenSSH reads Include from 7.3 onward. Anything older needs the managed block.
 sshd_supports_include() {

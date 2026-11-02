@@ -56,16 +56,6 @@ parse_perms_args() {
     done
 }
 
-# Prints "group mode" for the shadow-family files on this host.
-shadow_ownership() {
-    if getent group shadow >/dev/null 2>&1 \
-        && [[ "$(stat -c '%G' /etc/shadow 2>/dev/null || true)" == "shadow" ]]; then
-        printf 'shadow 0640\n'
-    else
-        printf 'root 0600\n'
-    fi
-}
-
 remember_perm() {
     PERM_PATHS+=("$1")
     PERM_MODES+=("$2")
