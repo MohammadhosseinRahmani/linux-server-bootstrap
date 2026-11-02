@@ -176,10 +176,20 @@ fi
 if [[ "${SKIP_UNIT}" -eq 0 ]]; then
     section "unit suite"
     if bash "${PROJECT_DIR}/tests/unit/run_all.sh" > "${SANDBOX}/unit.out" 2>&1; then
-        grep -E '^Ran [0-9]+ checks' "${SANDBOX}/unit.out" | sed 's/^/  /'
+        grep -E '^Ran [0-9]+ checks|: [0-9]+ check\(s\), [0-9]+ failure' "${SANDBOX}/unit.out" | sed 's/^/  /'
         success "unit suite passed"
     else
-        tail -60 "${SANDBOX}/unit.out"
+        # The suites run in order, so a raw tail reports whichever finished last and
+        # hides the one that failed. The runner names the failures instead, and a
+        # FAIL line says which check went wrong.
+        UNIT_WHY="$(grep -E '^FAILED_SUITES |^  FAIL ' "${SANDBOX}/unit.out" || true)"
+        if [[ -n "${UNIT_WHY}" ]]; then
+            printf '%s\n' "${UNIT_WHY}" | head -40
+        else
+            # No FAIL line means a suite died before it could print one; its output
+            # is the only clue left.
+            tail -60 "${SANDBOX}/unit.out"
+        fi
         error "unit suite failed"
         FAILED=1
     fi
@@ -270,11 +280,27 @@ fi
 
 section "host fingerprint"
 fingerprint > "${SANDBOX}/host-after.txt"
-if diff -u "${SANDBOX}/host-before.txt" "${SANDBOX}/host-after.txt" > "${SANDBOX}/host-diff.txt"; then
+# diff is not a guarantee on a minimal image (the EL containers ship without
+# diffutils), and this comparison only needs the lines that differ. grep -Fxv is
+# in every image, so a missing diffutility cannot turn into a missing defect.
+ADDED="$(grep -Fxv -f "${SANDBOX}/host-before.txt" "${SANDBOX}/host-after.txt" || true)"
+GONE="$(grep -Fxv -f "${SANDBOX}/host-after.txt" "${SANDBOX}/host-before.txt" || true)"
+if [[ ! -s "${SANDBOX}/host-before.txt" ]]; then
+    # An empty baseline would make every later reading look unchanged.
+    error "the host fingerprint took no readings, so the comparison proves nothing"
+    FAILED=1
+elif [[ -z "${ADDED}" && -z "${GONE}" ]]; then
     success "nothing on the host changed"
 else
     error "the dry run touched the host:"
-    cat "${SANDBOX}/host-diff.txt"
+    if [[ -n "${ADDED}" ]]; then
+        printf '  appeared or changed:\n'
+        printf '%s\n' "${ADDED}" | sed 's/^/    /'
+    fi
+    if [[ -n "${GONE}" ]]; then
+        printf '  disappeared:\n'
+        printf '%s\n' "${GONE}" | sed 's/^/    /'
+    fi
     FAILED=1
 fi
 
