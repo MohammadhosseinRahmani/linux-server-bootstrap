@@ -185,6 +185,10 @@ if [[ "${SKIP_UNIT}" -eq 0 ]]; then
         UNIT_WHY="$(grep -E '^FAILED_SUITES |^  FAIL ' "${SANDBOX}/unit.out" || true)"
         if [[ -n "${UNIT_WHY}" ]]; then
             printf '%s\n' "${UNIT_WHY}" | head -40
+            # A FAIL line names the check that went wrong but not what it saw. The
+            # suite prints the offending output underneath, so the first failure is
+            # reproduced with its context.
+            grep -m 1 -A 25 '^  FAIL ' "${SANDBOX}/unit.out" || true
         else
             # No FAIL line means a suite died before it could print one; its output
             # is the only clue left.
@@ -196,6 +200,16 @@ if [[ "${SKIP_UNIT}" -eq 0 ]]; then
 fi
 
 section "orchestrator dry-run"
+# Stages that enable a daemon refuse a host with no service manager, which is what a
+# container reports, so a plan-only pass there would fail on the runner rather than on
+# the plan. The pass describes a sysv host instead: every command a service manager
+# would have run is intercepted by the dry run, so nothing is asked of this host, and
+# the plan the operator sees is still the plan the stages produce.
+if [[ "${INIT_SYSTEM}" == "none" ]]; then
+    printf 'no service manager on this host, so the pass plans for a sysv one\n'
+    INIT_SYSTEM=sysv
+    export INIT_SYSTEM
+fi
 # A minimal image does not always ship the locale the operator would ask for, and
 # the base stage refuses to point LANG at something glibc never generated, so the
 # pass uses the first name this host can actually produce.
